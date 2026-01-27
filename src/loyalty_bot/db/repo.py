@@ -60,8 +60,16 @@ async def unsubscribe_customer_from_shop(pool: asyncpg.Pool, shop_id: int, custo
 
 
 async def shop_exists(pool: asyncpg.Pool, shop_id: int) -> bool:
+    """Exists check for any shop (active or disabled)."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT 1 FROM shops WHERE id=$1;", shop_id)
+        return row is not None
+
+
+async def shop_is_active(pool: asyncpg.Pool, shop_id: int) -> bool:
+    """True if shop exists and is_active=true."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT 1 FROM shops WHERE id=$1 AND is_active=true;", shop_id)
         return row is not None
 
 

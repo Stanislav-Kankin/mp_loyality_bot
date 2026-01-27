@@ -7,8 +7,15 @@ from aiogram.filters.command import CommandObject
 from aiogram.types import Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import seller_main_menu
-from loyalty_bot.db.repo import ensure_customer, ensure_seller, shop_exists, subscribe_customer_to_shop
+from loyalty_bot.bot.keyboards import seller_main_menu, buyer_subscription_menu
+from loyalty_bot.db.repo import (
+    ensure_customer,
+    ensure_seller,
+    shop_exists,
+    shop_is_active,
+    subscribe_customer_to_shop,
+    unsubscribe_customer_from_shop,
+)
 
 router = Router()
 
@@ -40,12 +47,17 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
             await message.answer("Магазин не найден. Проверьте ссылку/QR.")
             return
 
+        if not await shop_is_active(pool, shop_id):
+            await message.answer("Магазин сейчас отключён. Обратитесь к продавцу.")
+            return
+
         customer_id = await ensure_customer(pool, tg_id)
         await subscribe_customer_to_shop(pool, shop_id=shop_id, customer_id=customer_id)
 
         await message.answer(
             "Вы подписаны на уведомления магазина ✅\n\n"
-            "Чтобы отписаться — кнопка появится позже (Этап 1.3)."
+            "Если захотите — можно отписаться кнопкой ниже.",
+            reply_markup=buyer_subscription_menu(shop_id),
         )
         return
 
@@ -60,3 +72,23 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
         "Чтобы подписаться — перейдите по ссылке/QR от продавца.\n"
         "Если вы продавец — попросите администратора добавить ваш TG id в SELLER_TG_IDS."
     )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("buyer:unsub:"))
+async def buyer_unsubscribe_cb(cb, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    if not await shop_exists(pool, shop_id):
+        await cb.answer("Магазин не найден", show_alert=True)
+        return
+
+    customer_id = await ensure_customer(pool, tg_id)
+    await unsubscribe_customer_from_shop(pool, shop_id=shop_id, customer_id=customer_id)
+
+    await cb.message.edit_text("Вы отписались ✅")
+    await cb.answer()
