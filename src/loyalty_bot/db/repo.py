@@ -537,9 +537,7 @@ async def start_campaign_sending(
             )
             if camp is None:
                 raise ValueError("campaign_not_found")
-            if str(camp["status"]) != "paid":
-                raise ValueError("campaign_not_paid")
-
+            
             seller_id = int(camp["seller_id"])
 
             # Consume 1 credit.

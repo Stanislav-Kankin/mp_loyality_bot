@@ -26,12 +26,13 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Ссылка", callback_data=f"shop:link:{shop_id}")
     kb.button(text="🔳 QR", callback_data=f"shop:qr:{shop_id}")
+    kb.button(text="📣 Рассылка", callback_data=f"shop:campaign:new:{shop_id}")
     kb.button(text="👥 Подписчики", callback_data=f"shop:stats:{shop_id}")
     if is_admin:
         kb.button(text="✏️ Редактировать", callback_data=f"admin:shop:edit:{shop_id}")
         kb.button(text="🗑 Отключить", callback_data=f"admin:shop:disable:{shop_id}")
     kb.button(text="⬅️ К списку", callback_data="shops:list")
-    kb.adjust(2, 1, 2 if is_admin else 0, 1)
+    kb.adjust(2, 2, 2 if is_admin else 0, 1)
     return kb.as_markup()
 
 
@@ -72,14 +73,10 @@ def campaigns_list_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
 def campaign_actions(
     campaign_id: int,
     *,
-    show_test: bool = False,
-    show_send: bool = False,
+    show_send: bool = True,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
-    kb.button(text="💳 Оплатить", callback_data=f"campaign:pay:stub:{campaign_id}")
-    if show_test:
-        kb.button(text="✅ TEST: оплатить", callback_data=f"campaign:pay:test:{campaign_id}")
     if show_send:
         kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
     kb.button(text="⬅️ Назад", callback_data="campaigns:list")
