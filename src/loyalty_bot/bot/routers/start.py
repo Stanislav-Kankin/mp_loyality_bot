@@ -7,6 +7,7 @@ from aiogram.filters.command import CommandObject
 from aiogram.types import Message
 
 from loyalty_bot.config import settings
+from loyalty_bot.bot.keyboards import seller_main_menu
 from loyalty_bot.db.repo import ensure_customer, ensure_seller, shop_exists, subscribe_customer_to_shop
 
 router = Router()
@@ -44,17 +45,14 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
 
         await message.answer(
             "Вы подписаны на уведомления магазина ✅\n\n"
-            "Чтобы отписаться — нажмите /unsubscribe (сделаем на следующем этапе)."
+            "Чтобы отписаться — кнопка появится позже (Этап 1.3)."
         )
         return
 
     # Seller flow (allowlist from env)
     if tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set:
         await ensure_seller(pool, tg_id)
-        await message.answer(
-            "Привет! Вы вошли как селлер ✅\n\n"
-            "Следующий шаг: создание магазина (название + категория) и выдача ссылки/QR."
-        )
+        await message.answer("Панель селлера:", reply_markup=seller_main_menu())
         return
 
     await message.answer(
