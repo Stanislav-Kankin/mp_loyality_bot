@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from datetime import date, datetime
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -55,6 +56,36 @@ def _format_price(price_minor: int, currency: str) -> str:
     major = price_minor / 100
     # Keep as plain number + currency (works for RUB, USD, etc.)
     return f"{major:.2f} {currency}"
+
+
+def _format_dt(value: object) -> str:
+    """Format datetimes from asyncpg records safely.
+
+    asyncpg may return datetime/date objects (with or without tz). We keep formatting
+    intentionally simple and stable for MVP UI.
+    """
+
+    if value is None:
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    # Fallback (e.g., already a string)
+    return str(value)
+
+
+def _format_dt(val: object) -> str:
+    """Format DB datetime/date values safely for UI."""
+    if val is None:
+        return "—"
+    if isinstance(val, datetime):
+        # Display without seconds to keep UI compact.
+        return val.strftime("%Y-%m-%d %H:%M")
+    if isinstance(val, date):
+        return val.strftime("%Y-%m-%d")
+    # Fallback for strings or unknown types.
+    return str(val)
 
 
 @router.callback_query(F.data == "seller:campaigns")
