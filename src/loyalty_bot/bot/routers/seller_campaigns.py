@@ -175,7 +175,7 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         f"Текст: {text[:200]}{'…' if len(text) > 200 else ''}\n"
         f"Кнопка: {button_title}\n"
         f"URL: {url}\n\n"
-        f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}"
+        f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}\n"
         "Оплата будет на следующем этапе.",
         reply_markup=campaign_actions(campaign_id),
     )
