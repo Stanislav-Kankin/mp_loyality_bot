@@ -17,6 +17,18 @@ from loyalty_bot.db.repo import (
     list_seller_shops,
 )
 
+def _status_label(status: str) -> str:
+    s = (status or "").strip().lower()
+    return {
+        "draft": "Черновик",
+        "unpaid": "Не оплачено",
+        "paid": "Оплачено",
+        "sending": "Отправляется",
+        "sent": "Отправлено",
+        "failed": "Ошибка",
+        "cancelled": "Отменено",
+    }.get(s, status)
+
 router = Router()
 
 
@@ -233,15 +245,18 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         preview = preview[:350] + "…"
 
     await cb.message.edit_text(
-        f"Кампания #{camp['id']}\n"
-        f"Статус: {camp['status']}\n"
-        f"Создана: {camp['created_at']}\n\n"
-        f"Текст:\n{preview}\n\n"
-        f"Кнопка: {camp['button_title']}\n"
-        f"URL: {camp['url']}\n"
-        f"Цена: {_format_price(camp['price_minor'], camp['currency'])}",
-        reply_markup=campaign_actions(campaign_id, show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set)),
-    )
+    f"Рассылка №{camp['id']}\n"
+    f"<b>Статус:</b> {_status_label(camp['status'])}\n"
+    f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
+    f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
+    f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
+    f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
+    f"<b>URL:</b> {html.escape(camp['url'])}\n"
+    f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
+    reply_markup=campaign_actions(campaign_id, show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set)),
+    parse_mode="HTML",
+    disable_web_page_preview=True,
+)
     await cb.answer()
 
 
@@ -323,16 +338,4 @@ async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await mark_campaign_paid_test(pool, campaign_id=campaign_id)
     await cb.message.answer(f"TEST оплата ✅\nКампания #{campaign_id} помечена как оплаченная.")
-    await cb.answer()def _status_label(status: str) -> str:
-    s = (status or "").strip().lower()
-    return {
-        "draft": "Черновик",
-        "unpaid": "Не оплачено",
-        "paid": "Оплачено",
-        "sending": "Отправляется",
-        "sent": "Отправлено",
-        "failed": "Ошибка",
-        "cancelled": "Отменено",
-    }.get(s, status)
-
-
+    await cb.answer()

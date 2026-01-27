@@ -325,7 +325,7 @@ async def get_campaign_for_seller(
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
             """
-            SELECT c.id, c.status, c.created_at, c.text, c.button_title, c.url, c.price_minor, c.currency, c.shop_id, sh.name AS shop_name
+            SELECT c.id, c.status, c.created_at, c.text, c.button_title, c.url, c.price_minor, c.currency
             FROM campaigns c
             JOIN shops sh ON sh.id = c.shop_id
             JOIN sellers s ON s.id = sh.seller_id
