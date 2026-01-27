@@ -13,6 +13,7 @@ from loyalty_bot.bot.keyboards import buyer_gender_menu, buyer_subscription_menu
 from loyalty_bot.db.repo import (
     get_customer,
     ensure_seller,
+    get_seller_credits,
     shop_exists,
     shop_is_active,
     subscribe_customer_to_shop,
@@ -82,7 +83,12 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
     # Seller flow (allowlist from env)
     if tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set:
         await ensure_seller(pool, tg_id)
-        await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+        await message.answer(
+            f"Панель селлера:\n"
+            f"Доступно рассылок: {credits}",
+            reply_markup=seller_main_menu(),
+        )
         return
 
     await message.answer(
@@ -106,7 +112,8 @@ async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool:
 
     data = await state.get_data()
     customer_id = data.get("customer_id")
-    if not isinstance(customer_id, int):
+    shop_id = data.get("shop_id")
+    if not isinstance(customer_id, int) or not isinstance(shop_id, int):
         await state.clear()
         await message.answer("Ошибка состояния. Перейдите по ссылке магазина ещё раз.")
         return
@@ -114,13 +121,13 @@ async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool:
     await update_customer_profile(pool, customer_id, full_years=years)
 
     await state.set_state(BuyerOnboarding.gender)
-    await message.answer("2) Укажите ваш пол:", reply_markup=buyer_gender_menu())
+    await message.answer("2) Укажите ваш пол:", reply_markup=buyer_gender_menu(shop_id))
 
 
 @router.callback_query(BuyerOnboarding.gender, F.data.startswith("buyer:gender:"))
 async def buyer_onboarding_gender(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     code = cb.data.split(":")[-1]
-    if code not in {"m", "f", "o"}:
+    if code not in {"m", "f", "u"}:
         await cb.answer("Некорректный выбор", show_alert=True)
         return
 

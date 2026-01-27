@@ -10,7 +10,14 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import seller_main_menu, shops_menu, shop_actions
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
-from loyalty_bot.db.repo import create_shop, get_shop_for_seller, get_shop_subscription_stats, list_seller_shops
+from loyalty_bot.db.repo import (
+    create_shop,
+    ensure_seller,
+    get_seller_credits,
+    get_shop_for_seller,
+    get_shop_subscription_stats,
+    list_seller_shops,
+)
 
 router = Router()
 
@@ -33,21 +40,27 @@ def _shop_deeplink(bot_username: str, shop_id: int) -> str:
 
 
 @router.message(Command("seller"))
-async def seller_home_cmd(message: Message) -> None:
+async def seller_home_cmd(message: Message, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not _is_seller(tg_id):
         await message.answer("Нет доступа.")
         return
-    await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+
+    await ensure_seller(pool, tg_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    await message.answer(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
 
 
 @router.callback_query(F.data == "seller:home")
-async def seller_home_cb(cb: CallbackQuery) -> None:
+async def seller_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu())
+
+    await ensure_seller(pool, tg_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    await cb.message.edit_text(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
     await cb.answer()
 
 

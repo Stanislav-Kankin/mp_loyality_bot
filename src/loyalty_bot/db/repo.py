@@ -3,18 +3,135 @@ from __future__ import annotations
 import asyncpg
 
 
+# ------------------------
+# Sellers
+# ------------------------
+
+_DEFAULT_FREE_CREDITS_ON_SIGNUP = 3
+
+
 async def ensure_seller(pool: asyncpg.Pool, tg_user_id: int) -> int:
+    """Ensure seller exists.
+
+    Also ensures a seller_credits row exists; if it's created for the first time,
+    grants a small free balance (MVP: 3 campaigns).
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO sellers(tg_user_id)
+                VALUES ($1)
+                ON CONFLICT (tg_user_id) DO UPDATE SET tg_user_id = EXCLUDED.tg_user_id
+                RETURNING id;
+                """,
+                tg_user_id,
+            )
+            seller_id = int(row["id"])
+
+            # Create balance row once; if created now, grant free credits.
+            ins = await conn.fetchrow(
+                """
+                INSERT INTO seller_credits(seller_id, balance)
+                VALUES ($1, $2)
+                ON CONFLICT (seller_id) DO NOTHING
+                RETURNING seller_id;
+                """,
+                seller_id,
+                _DEFAULT_FREE_CREDITS_ON_SIGNUP,
+            )
+            if ins is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO seller_credit_transactions(seller_id, delta, reason, balance_after)
+                    VALUES ($1, $2, 'free_signup', $3);
+                    """,
+                    seller_id,
+                    _DEFAULT_FREE_CREDITS_ON_SIGNUP,
+                    _DEFAULT_FREE_CREDITS_ON_SIGNUP,
+                )
+
+            return seller_id
+
+
+async def get_seller_credits(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO sellers(tg_user_id)
-            VALUES ($1)
-            ON CONFLICT (tg_user_id) DO UPDATE SET tg_user_id = EXCLUDED.tg_user_id
-            RETURNING id;
+            SELECT sc.balance
+            FROM sellers s
+            JOIN seller_credits sc ON sc.seller_id = s.id
+            WHERE s.tg_user_id=$1;
             """,
-            tg_user_id,
+            seller_tg_user_id,
         )
-        return int(row["id"])
+        if row is None:
+            return 0
+        return int(row["balance"] or 0)
+
+
+async def add_seller_credits(
+    pool: asyncpg.Pool,
+    *,
+    seller_id: int,
+    delta: int,
+    reason: str,
+    invoice_payload: str | None = None,
+    tg_payment_charge_id: str | None = None,
+    provider_payment_charge_id: str | None = None,
+    campaign_id: int | None = None,
+) -> int:
+    """Adjust seller credits and write a ledger transaction.
+
+    Returns the new balance.
+    """
+    if delta == 0:
+        # no-op
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT balance FROM seller_credits WHERE seller_id=$1;", seller_id)
+            return int(row["balance"] or 0) if row else 0
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE seller_credits
+                SET balance = balance + $2,
+                    updated_at = now()
+                WHERE seller_id = $1
+                RETURNING balance;
+                """,
+                seller_id,
+                delta,
+            )
+            if row is None:
+                raise ValueError("seller_credits_missing")
+
+            new_balance = int(row["balance"] or 0)
+            await conn.execute(
+                """
+                INSERT INTO seller_credit_transactions(
+                    seller_id, delta, reason, created_at,
+                    campaign_id, tg_payment_charge_id, provider_payment_charge_id,
+                    invoice_payload, balance_after
+                )
+                VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8);
+                """,
+                seller_id,
+                delta,
+                reason,
+                campaign_id,
+                tg_payment_charge_id,
+                provider_payment_charge_id,
+                invoice_payload,
+                new_balance,
+            )
+            return new_balance
+
+
+# ------------------------
+# Customers
+# ------------------------
 
 
 async def get_customer(pool: asyncpg.Pool, tg_user_id: int) -> dict:
@@ -222,6 +339,7 @@ async def get_shop_subscription_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
 
 # Admin helpers (used by admin shop actions in shop card)
 
+
 async def update_shop(pool: asyncpg.Pool, shop_id: int, *, name: str | None = None, category: str | None = None) -> None:
     fields = []
     args = []
@@ -248,7 +366,9 @@ async def set_shop_active(pool: asyncpg.Pool, shop_id: int, is_active: bool) -> 
     async with pool.acquire() as conn:
         await conn.execute("UPDATE shops SET is_active=$1 WHERE id=$2;", is_active, shop_id)
 
+
 # Campaigns (seller)
+
 
 async def create_campaign_draft(
     pool: asyncpg.Pool,
@@ -319,9 +439,7 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
         ]
 
 
-async def get_campaign_for_seller(
-    pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int
-) -> dict | None:
+async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int) -> dict | None:
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
             """
