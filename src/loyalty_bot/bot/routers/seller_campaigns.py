@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -42,13 +43,6 @@ def _format_price(price_minor: int, currency: str) -> str:
     major = price_minor / 100
     # Keep as plain number + currency (works for RUB, USD, etc.)
     return f"{major:.2f} {currency}"
-
-def _format_dt(dt) -> str:
-    # dt is typically timezone-aware (TIMESTAMPTZ). Show in a compact human format.
-    try:
-        return dt.strftime("%H:%M:%S %d.%m.%Y")
-    except Exception:
-        return str(dt)
 
 
 @router.callback_query(F.data == "seller:campaigns")
@@ -204,7 +198,13 @@ async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     items = []
     for c in campaigns:
-        items.append((c["id"], f"#{c['id']} {c['status']} ({c['created_at'].date()})"))
+        shop_name = str(c.get("shop_name", ""))
+        if len(shop_name) > 18:
+            shop_name = shop_name[:18] + "…"
+        status_h = _status_label(str(c.get("status", "")))
+        dt = c.get("created_at")
+        date_s = dt.date().isoformat() if dt else ""
+        items.append((c["id"], f"#{c['id']} {status_h} · {shop_name} ({date_s})"))
 
     await cb.message.edit_text("Ваши рассылки (последние 10):", reply_markup=campaigns_list_kb(items))
     await cb.answer()
@@ -235,7 +235,7 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await cb.message.edit_text(
         f"Кампания #{camp['id']}\n"
         f"Статус: {camp['status']}\n"
-        f"Создана: {_format_dt(camp['created_at'])}\n\n"
+        f"Создана: {camp['created_at']}\n\n"
         f"Текст:\n{preview}\n\n"
         f"Кнопка: {camp['button_title']}\n"
         f"URL: {camp['url']}\n"
@@ -323,4 +323,16 @@ async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await mark_campaign_paid_test(pool, campaign_id=campaign_id)
     await cb.message.answer(f"TEST оплата ✅\nКампания #{campaign_id} помечена как оплаченная.")
-    await cb.answer()
+    await cb.answer()def _status_label(status: str) -> str:
+    s = (status or "").strip().lower()
+    return {
+        "draft": "Черновик",
+        "unpaid": "Не оплачено",
+        "paid": "Оплачено",
+        "sending": "Отправляется",
+        "sent": "Отправлено",
+        "failed": "Ошибка",
+        "cancelled": "Отменено",
+    }.get(s, status)
+
+

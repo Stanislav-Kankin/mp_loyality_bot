@@ -296,7 +296,7 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT c.id, c.status, c.created_at
+            SELECT c.id, c.status, c.created_at, c.shop_id, sh.name AS shop_name
             FROM campaigns c
             JOIN shops sh ON sh.id = c.shop_id
             JOIN sellers s ON s.id = sh.seller_id
@@ -307,7 +307,16 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
             seller_tg_user_id,
             limit,
         )
-        return [{"id": int(r["id"]), "status": str(r["status"]), "created_at": r["created_at"]} for r in rows]
+        return [
+            {
+                "id": int(r["id"]),
+                "status": str(r["status"]),
+                "created_at": r["created_at"],
+                "shop_id": int(r["shop_id"]),
+                "shop_name": str(r["shop_name"]),
+            }
+            for r in rows
+        ]
 
 
 async def get_campaign_for_seller(
@@ -316,7 +325,7 @@ async def get_campaign_for_seller(
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
             """
-            SELECT c.id, c.status, c.created_at, c.text, c.button_title, c.url, c.price_minor, c.currency
+            SELECT c.id, c.status, c.created_at, c.text, c.button_title, c.url, c.price_minor, c.currency, c.shop_id, sh.name AS shop_name
             FROM campaigns c
             JOIN shops sh ON sh.id = c.shop_id
             JOIN sellers s ON s.id = sh.seller_id
