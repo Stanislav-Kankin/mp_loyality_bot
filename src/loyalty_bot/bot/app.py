@@ -10,6 +10,7 @@ from loyalty_bot.config import settings
 from loyalty_bot.db.migrations import apply_migrations
 from loyalty_bot.db.pool import create_pool
 from loyalty_bot.logging_setup import setup_logging
+from loyalty_bot.bot.middlewares.db import DbMiddleware
 from loyalty_bot.bot.routers.start import router as start_router
 
 
@@ -25,6 +26,8 @@ async def main() -> None:
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher()
+    dp.update.middleware(DbMiddleware(pool))
+
     dp.include_router(start_router)
 
     logger.info("Bot started")

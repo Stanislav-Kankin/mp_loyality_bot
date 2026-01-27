@@ -8,7 +8,12 @@ class Settings(BaseSettings):
 
     bot_token: str
     payment_provider_token: str
+
+    # Admins can do anything (later: cancel campaigns, etc.)
     admin_tg_ids: str = ""
+
+    # Seller allowlist (comma-separated TG user IDs). MVP: onboarding seller only if in this list.
+    seller_tg_ids: str = ""
 
     database_dsn: str
 
@@ -23,12 +28,20 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-    @property
-    def admin_ids_set(self) -> set[int]:
-        raw = (self.admin_tg_ids or "").strip()
+    @staticmethod
+    def _parse_ids(value: str) -> set[int]:
+        raw = (value or "").strip()
         if not raw:
             return set()
         return {int(x.strip()) for x in raw.split(",") if x.strip()}
+
+    @property
+    def admin_ids_set(self) -> set[int]:
+        return self._parse_ids(self.admin_tg_ids)
+
+    @property
+    def seller_ids_set(self) -> set[int]:
+        return self._parse_ids(self.seller_tg_ids)
 
 
 settings = Settings()
