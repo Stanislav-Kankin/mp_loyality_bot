@@ -337,3 +337,25 @@ async def get_campaign_for_seller(
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
         }
+
+async def mark_campaign_paid(
+    pool: asyncpg.Pool,
+    *,
+    campaign_id: int,
+    tg_payment_charge_id: str,
+    provider_payment_charge_id: str,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE campaigns
+            SET status='paid',
+                paid_at=now(),
+                tg_payment_charge_id=$1,
+                provider_payment_charge_id=$2
+            WHERE id=$3;
+            """,
+            tg_payment_charge_id,
+            provider_payment_charge_id,
+            campaign_id,
+        )

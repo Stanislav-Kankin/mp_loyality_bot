@@ -4,7 +4,7 @@ import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, LabeledPrice
 
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions
@@ -288,5 +288,35 @@ async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await cb.answer("Ок ✅")
     await cb.message.answer(f"Ссылка: {camp['url']}")
 @router.callback_query(F.data.startswith("campaign:pay:stub:"))
-async def campaign_pay_stub(cb: CallbackQuery) -> None:
-    await cb.answer("Оплата будет на следующем этапе (Этап 3).", show_alert=True)
+async def campaign_pay(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    campaign_id = int(raw_id)
+
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    if camp is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    if not settings.payment_provider_token or settings.payment_provider_token == "CHANGE_ME":
+        await cb.answer("PAYMENT_PROVIDER_TOKEN не настроен в .env", show_alert=True)
+        return
+
+    prices = [LabeledPrice(label=f"Рассылка #{campaign_id}", amount=int(camp["price_minor"]))]
+
+    await cb.message.answer_invoice(
+        title=f"Оплата рассылки #{campaign_id}",
+        description="Разовая оплата за запуск рассылки.",
+        provider_token=settings.payment_provider_token,
+        currency=str(camp["currency"]),
+        prices=prices,
+        payload=f"campaign:{campaign_id}",
+    )
+    await cb.answer()

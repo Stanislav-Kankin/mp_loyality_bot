@@ -14,6 +14,7 @@ from loyalty_bot.bot.middlewares.db import DbMiddleware
 from loyalty_bot.bot.routers.start import router as start_router
 from loyalty_bot.bot.routers.seller_shops import router as seller_shops_router
 from loyalty_bot.bot.routers.seller_campaigns import router as seller_campaigns_router
+from loyalty_bot.bot.routers.payments import router as payments_router
 from loyalty_bot.bot.routers.admin_shops import router as admin_shops_router
 
 
@@ -34,6 +35,7 @@ async def main() -> None:
     dp.include_router(start_router)
     dp.include_router(seller_shops_router)
     dp.include_router(seller_campaigns_router)
+    dp.include_router(payments_router)
     dp.include_router(admin_shops_router)
 
     logger.info("Bot started")
