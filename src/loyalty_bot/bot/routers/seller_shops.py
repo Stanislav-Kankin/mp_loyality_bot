@@ -38,7 +38,7 @@ async def seller_home_cmd(message: Message) -> None:
     if tg_id is None or not _is_seller(tg_id):
         await message.answer("Нет доступа.")
         return
-    await message.answer("Панель селлера:", reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)))
+    await message.answer("Панель селлера:", reply_markup=seller_main_menu())
 
 
 @router.callback_query(F.data == "seller:home")
@@ -47,7 +47,7 @@ async def seller_home_cb(cb: CallbackQuery) -> None:
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)))
+    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu())
     await cb.answer()
 
 
