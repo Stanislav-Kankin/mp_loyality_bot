@@ -338,6 +338,7 @@ async def get_campaign_for_seller(
             "currency": str(r["currency"]),
         }
 
+
 async def mark_campaign_paid(
     pool: asyncpg.Pool,
     *,
@@ -359,3 +360,13 @@ async def mark_campaign_paid(
             provider_payment_charge_id,
             campaign_id,
         )
+
+
+async def mark_campaign_paid_test(pool: asyncpg.Pool, *, campaign_id: int) -> None:
+    # For development only (PAYMENTS_TEST_MODE).
+    await mark_campaign_paid(
+        pool,
+        campaign_id=campaign_id,
+        tg_payment_charge_id="test_mode",
+        provider_payment_charge_id="test_mode",
+    )
