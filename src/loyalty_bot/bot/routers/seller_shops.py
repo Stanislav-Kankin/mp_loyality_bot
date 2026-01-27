@@ -61,13 +61,8 @@ async def seller_shops_cb(cb: CallbackQuery) -> None:
     await cb.answer()
 
 
-# Stubs to avoid "not handled" logs for unfinished sections
-@router.callback_query(F.data.startswith("seller:campaigns:stub"))
-async def seller_campaigns_stub(cb: CallbackQuery) -> None:
-    await cb.answer("Рассылки будут на следующем этапе.", show_alert=True)
-
-
-@router.callback_query(F.data.startswith("seller:orders:stub"))
+# Stub for unfinished section
+@router.callback_query(F.data == "seller:orders:stub")
 async def seller_orders_stub(cb: CallbackQuery) -> None:
     await cb.answer("Заказы будут на следующем этапе.", show_alert=True)
 

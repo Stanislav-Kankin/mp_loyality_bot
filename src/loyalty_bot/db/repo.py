@@ -247,3 +247,93 @@ async def update_shop(pool: asyncpg.Pool, shop_id: int, *, name: str | None = No
 async def set_shop_active(pool: asyncpg.Pool, shop_id: int, is_active: bool) -> None:
     async with pool.acquire() as conn:
         await conn.execute("UPDATE shops SET is_active=$1 WHERE id=$2;", is_active, shop_id)
+
+# Campaigns (seller)
+
+async def create_campaign_draft(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    shop_id: int,
+    text: str,
+    button_title: str,
+    url: str,
+    price_minor: int,
+    currency: str,
+) -> int:
+    # Ensure shop belongs to seller
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1 AND sh.id=$2;
+            """,
+            seller_tg_user_id,
+            shop_id,
+        )
+        if row is None:
+            raise ValueError("shop_not_owned")
+
+        camp = await conn.fetchrow(
+            """
+            INSERT INTO campaigns(shop_id, status, text, button_title, url, price_minor, currency)
+            VALUES ($1, 'draft', $2, $3, $4, $5, $6)
+            RETURNING id;
+            """,
+            shop_id,
+            text,
+            button_title,
+            url,
+            price_minor,
+            currency,
+        )
+        return int(camp["id"])
+
+
+async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, limit: int = 10) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.id, c.status, c.created_at
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT $2;
+            """,
+            seller_tg_user_id,
+            limit,
+        )
+        return [{"id": int(r["id"]), "status": str(r["status"]), "created_at": r["created_at"]} for r in rows]
+
+
+async def get_campaign_for_seller(
+    pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int
+) -> dict | None:
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            """
+            SELECT c.id, c.status, c.created_at, c.text, c.button_title, c.url, c.price_minor, c.currency
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1 AND c.id=$2;
+            """,
+            seller_tg_user_id,
+            campaign_id,
+        )
+        if r is None:
+            return None
+        return {
+            "id": int(r["id"]),
+            "status": str(r["status"]),
+            "created_at": r["created_at"],
+            "text": str(r["text"]),
+            "button_title": str(r["button_title"]) if r["button_title"] is not None else "",
+            "url": str(r["url"]) if r["url"] is not None else "",
+            "price_minor": int(r["price_minor"]),
+            "currency": str(r["currency"]),
+        }
