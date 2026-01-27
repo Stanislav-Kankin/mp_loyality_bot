@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    payments_test_mode: bool = Field(default=False, alias=\"PAYMENTS_TEST_MODE\")
+    payments_test_mode: bool = Field(default=False, alias="PAYMENTS_TEST_MODE")
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str
