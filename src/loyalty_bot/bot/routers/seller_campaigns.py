@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions
 from loyalty_bot.db.repo import (
+    start_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
     get_campaign_for_seller,
@@ -22,11 +23,14 @@ def _status_label(status: str) -> str:
     s = (status or "").strip().lower()
     return {
         "draft": "Черновик",
+        "awaiting_payment": "Ожидает оплату",
         "unpaid": "Не оплачено",
         "paid": "Оплачено",
         "sending": "Отправляется",
+        "completed": "Отправлено",
         "sent": "Отправлено",
         "failed": "Ошибка",
+        "canceled": "Отменено",
         "cancelled": "Отменено",
     }.get(s, status)
 
@@ -222,7 +226,11 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         f"URL: {url}\n\n"
         f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}\n"
         "Оплата будет на следующем этапе.",
-        reply_markup=campaign_actions(campaign_id, show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set)),
+        reply_markup=campaign_actions(
+            campaign_id,
+            show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
+            show_send=False,
+        ),
     )
 
 
@@ -284,7 +292,11 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
     f"<b>URL:</b> {html.escape(camp['url'])}\n"
     f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
-    reply_markup=campaign_actions(campaign_id, show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set)),
+    reply_markup=campaign_actions(
+        campaign_id,
+        show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
+        show_send=(str(camp.get('status')) == 'paid'),
+    ),
     parse_mode="HTML",
     disable_web_page_preview=True,
 )
@@ -370,3 +382,39 @@ async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await mark_campaign_paid_test(pool, campaign_id=campaign_id)
     await cb.message.answer(f"TEST оплата ✅\nКампания #{campaign_id} помечена как оплаченная.")
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("campaign:send:"))
+async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    campaign_id = int(raw_id)
+
+    try:
+        total = await start_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    except ValueError as e:
+        code = str(e)
+        if code == "campaign_not_found":
+            await cb.answer("Кампания не найдена", show_alert=True)
+            return
+        if code == "campaign_not_paid":
+            await cb.answer("Кампания не оплачена", show_alert=True)
+            return
+        if code == "no_credits":
+            await cb.answer("Недостаточно рассылок на балансе", show_alert=True)
+            return
+        await cb.answer("Не удалось запустить рассылку", show_alert=True)
+        return
+
+    await cb.answer("Запущено ✅")
+    await cb.message.answer(
+        f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
+        "Воркер отправит сообщения в фоне."
+    )
