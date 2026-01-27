@@ -149,3 +149,81 @@ async def get_shop_for_seller(pool: asyncpg.Pool, seller_tg_user_id: int, shop_i
             "is_active": bool(row["is_active"]),
             "created_at": row["created_at"],
         }
+
+
+# Admin helpers
+
+async def list_all_shops(pool: asyncpg.Pool, limit: int = 20) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT sh.id, sh.name, sh.category, sh.is_active, sh.created_at, s.tg_user_id AS seller_tg_user_id
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            ORDER BY sh.created_at DESC, sh.id DESC
+            LIMIT $1;
+            """,
+            limit,
+        )
+        return [
+            {
+                "id": int(r["id"]),
+                "name": str(r["name"]),
+                "category": str(r["category"]),
+                "is_active": bool(r["is_active"]),
+                "created_at": r["created_at"],
+                "seller_tg_user_id": int(r["seller_tg_user_id"]),
+            }
+            for r in rows
+        ]
+
+
+async def get_shop_by_id(pool: asyncpg.Pool, shop_id: int) -> dict | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT sh.id, sh.name, sh.category, sh.is_active, sh.created_at, s.tg_user_id AS seller_tg_user_id
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE sh.id=$1;
+            """,
+            shop_id,
+        )
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "name": str(row["name"]),
+            "category": str(row["category"]),
+            "is_active": bool(row["is_active"]),
+            "created_at": row["created_at"],
+            "seller_tg_user_id": int(row["seller_tg_user_id"]),
+        }
+
+
+async def update_shop(pool: asyncpg.Pool, shop_id: int, *, name: str | None = None, category: str | None = None) -> None:
+    # Minimal update: set provided fields only.
+    fields = []
+    args = []
+    idx = 1
+
+    if name is not None:
+        fields.append(f"name=${idx}")
+        args.append(name)
+        idx += 1
+    if category is not None:
+        fields.append(f"category=${idx}")
+        args.append(category)
+        idx += 1
+
+    if not fields:
+        return
+
+    args.append(shop_id)
+    async with pool.acquire() as conn:
+        await conn.execute(f"UPDATE shops SET {', '.join(fields)} WHERE id=${idx};", *args)
+
+
+async def set_shop_active(pool: asyncpg.Pool, shop_id: int, is_active: bool) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE shops SET is_active=$1 WHERE id=$2;", is_active, shop_id)

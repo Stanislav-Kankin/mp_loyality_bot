@@ -13,6 +13,7 @@ from loyalty_bot.logging_setup import setup_logging
 from loyalty_bot.bot.middlewares.db import DbMiddleware
 from loyalty_bot.bot.routers.start import router as start_router
 from loyalty_bot.bot.routers.seller_shops import router as seller_shops_router
+from loyalty_bot.bot.routers.admin_shops import router as admin_shops_router
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ async def main() -> None:
 
     dp.include_router(start_router)
     dp.include_router(seller_shops_router)
+    dp.include_router(admin_shops_router)
 
     logger.info("Bot started")
     try:

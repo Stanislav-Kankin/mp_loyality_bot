@@ -20,8 +20,12 @@ class ShopCreate(StatesGroup):
     category = State()
 
 
+def _is_admin(tg_id: int) -> bool:
+    return tg_id in settings.admin_ids_set
+
+
 def _is_seller(tg_id: int) -> bool:
-    return tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set
+    return tg_id in settings.seller_ids_set or _is_admin(tg_id)
 
 
 def _shop_deeplink(bot_username: str, shop_id: int) -> str:
@@ -34,7 +38,7 @@ async def seller_home_cmd(message: Message) -> None:
     if tg_id is None or not _is_seller(tg_id):
         await message.answer("Нет доступа.")
         return
-    await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+    await message.answer("Панель селлера:", reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)))
 
 
 @router.callback_query(F.data == "seller:home")
@@ -43,7 +47,7 @@ async def seller_home_cb(cb: CallbackQuery) -> None:
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu())
+    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)))
     await cb.answer()
 
 
@@ -55,6 +59,17 @@ async def seller_shops_cb(cb: CallbackQuery) -> None:
         return
     await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
     await cb.answer()
+
+
+# Stubs to avoid "not handled" logs for unfinished sections
+@router.callback_query(F.data.startswith("seller:campaigns:stub"))
+async def seller_campaigns_stub(cb: CallbackQuery) -> None:
+    await cb.answer("Рассылки будут на следующем этапе.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("seller:orders:stub"))
+async def seller_orders_stub(cb: CallbackQuery) -> None:
+    await cb.answer("Заказы будут на следующем этапе.", show_alert=True)
 
 
 @router.callback_query(F.data == "shops:create")
@@ -116,7 +131,7 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
         f"🏪 {name}\n"
         f"Категория: {category}\n\n"
         f"Ссылка для покупателей:\n{link}",
-        reply_markup=shop_actions(shop_id),
+        reply_markup=shop_actions(shop_id, is_admin=_is_admin(tg_id)),
     )
 
 
@@ -133,17 +148,16 @@ async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer()
         return
 
-    lines = ["Ваши магазины:"]
-    # Build simple keyboard (max 10 per screen for MVP)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
     kb = InlineKeyboardBuilder()
     for sh in shops[:10]:
-        kb.button(text=f"🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
+        prefix = "✅" if sh["is_active"] else "⛔️"
+        kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
     kb.button(text="⬅️ Назад", callback_data="seller:shops")
     kb.adjust(1)
 
-    await cb.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    await cb.message.edit_text("Ваши магазины:", reply_markup=kb.as_markup())
     await cb.answer()
 
 
@@ -165,9 +179,10 @@ async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
+    status = "✅ активен" if shop["is_active"] else "⛔️ отключён"
     await cb.message.edit_text(
-        f"🏪 {shop['name']}\nКатегория: {shop['category']}\nID: {shop['id']}",
-        reply_markup=shop_actions(shop_id),
+        f"🏪 {shop['name']}\nКатегория: {shop['category']}\nID: {shop['id']}\nСтатус: {status}",
+        reply_markup=shop_actions(shop_id, is_admin=_is_admin(tg_id)),
     )
     await cb.answer()
 

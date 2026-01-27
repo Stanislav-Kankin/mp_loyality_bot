@@ -52,7 +52,7 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
     # Seller flow (allowlist from env)
     if tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set:
         await ensure_seller(pool, tg_id)
-        await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+        await message.answer("Панель селлера:", reply_markup=seller_main_menu(is_admin=(tg_id in settings.admin_ids_set)))
         return
 
     await message.answer(
