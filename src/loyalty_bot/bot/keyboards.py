@@ -71,6 +71,7 @@ def campaigns_list_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
 
 def campaign_actions(campaign_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
     kb.button(text="💳 Оплатить", callback_data=f"campaign:pay:stub:{campaign_id}")
     kb.button(text="⬅️ Назад", callback_data="campaigns:list")
     kb.adjust(1)

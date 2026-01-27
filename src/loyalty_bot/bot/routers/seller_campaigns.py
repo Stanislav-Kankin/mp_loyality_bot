@@ -34,6 +34,15 @@ def _is_valid_url(url: str) -> bool:
     return (u.startswith("http://") or u.startswith("https://")) and len(u) <= 2048
 
 
+def _format_price(price_minor: int, currency: str) -> str:
+    # Telegram Payments uses minor units (kopeks for RUB).
+    if price_minor < 0:
+        price_minor = 0
+    major = price_minor / 100
+    # Keep as plain number + currency (works for RUB, USD, etc.)
+    return f"{major:.2f} {currency}"
+
+
 @router.callback_query(F.data == "seller:campaigns")
 async def seller_campaigns_home(cb: CallbackQuery) -> None:
     tg_id = cb.from_user.id
@@ -166,7 +175,9 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         f"Текст: {text[:200]}{'…' if len(text) > 200 else ''}\n"
         f"Кнопка: {button_title}\n"
         f"URL: {url}\n\n"
-        f"Стоимость: {settings.price_per_campaign_minor} {settings.currency} (minor units)\n\n"
+        f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}
+
+"
         "Оплата будет на следующем этапе.",
         reply_markup=campaign_actions(campaign_id),
     )
@@ -222,12 +233,62 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"Текст:\n{preview}\n\n"
         f"Кнопка: {camp['button_title']}\n"
         f"URL: {camp['url']}\n"
-        f"Цена: {camp['price_minor']} {camp['currency']}",
+        f"Цена: {_format_price(camp['price_minor'], camp['currency'])}",
         reply_markup=campaign_actions(campaign_id),
     )
     await cb.answer()
 
 
+
+@router.callback_query(F.data.startswith("campaign:preview:"))
+async def campaign_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    campaign_id = int(raw_id)
+
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    if camp is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text=camp["button_title"] or "Открыть ссылку", callback_data=f"preview:open:{campaign_id}")
+    kb.adjust(1)
+
+    await cb.message.answer("Пример сообщения для покупателя:")
+    await cb.message.answer(camp["text"], reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("preview:open:"))
+async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    campaign_id = int(raw_id)
+
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    if camp is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    await cb.answer("Ок ✅")
+    await cb.message.answer(f"Ссылка: {camp['url']}")
 @router.callback_query(F.data.startswith("campaign:pay:stub:"))
 async def campaign_pay_stub(cb: CallbackQuery) -> None:
     await cb.answer("Оплата будет на следующем этапе (Этап 3).", show_alert=True)
