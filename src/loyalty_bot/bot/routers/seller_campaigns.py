@@ -43,6 +43,13 @@ def _format_price(price_minor: int, currency: str) -> str:
     # Keep as plain number + currency (works for RUB, USD, etc.)
     return f"{major:.2f} {currency}"
 
+def _format_dt(dt) -> str:
+    # dt is typically timezone-aware (TIMESTAMPTZ). Show in a compact human format.
+    try:
+        return dt.strftime("%H:%M:%S %d.%m.%Y")
+    except Exception:
+        return str(dt)
+
 
 @router.callback_query(F.data == "seller:campaigns")
 async def seller_campaigns_home(cb: CallbackQuery) -> None:
@@ -228,7 +235,7 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await cb.message.edit_text(
         f"Кампания #{camp['id']}\n"
         f"Статус: {camp['status']}\n"
-        f"Создана: {camp['created_at']}\n\n"
+        f"Создана: {_format_dt(camp['created_at'])}\n\n"
         f"Текст:\n{preview}\n\n"
         f"Кнопка: {camp['button_title']}\n"
         f"URL: {camp['url']}\n"
