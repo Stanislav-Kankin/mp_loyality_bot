@@ -26,11 +26,17 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Ссылка", callback_data=f"shop:link:{shop_id}")
     kb.button(text="🔳 QR", callback_data=f"shop:qr:{shop_id}")
+    kb.button(text="👥 Подписчики", callback_data=f"shop:stats:{shop_id}")
     if is_admin:
         kb.button(text="✏️ Редактировать", callback_data=f"admin:shop:edit:{shop_id}")
         kb.button(text="🗑 Отключить", callback_data=f"admin:shop:disable:{shop_id}")
     kb.button(text="⬅️ К списку", callback_data="shops:list")
-    kb.adjust(2, 2 if is_admin else 1, 1)
+
+    if is_admin:
+        kb.adjust(2, 1, 2, 1)
+    else:
+        kb.adjust(2, 1, 1)
+
     return kb.as_markup()
 
 
@@ -38,4 +44,13 @@ def buyer_subscription_menu(shop_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔕 Отписаться", callback_data=f"buyer:unsub:{shop_id}")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def buyer_gender_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👨 Мужской", callback_data="buyer:gender:m")
+    kb.button(text="👩 Женский", callback_data="buyer:gender:f")
+    kb.button(text="🤷 Другое", callback_data="buyer:gender:o")
+    kb.adjust(2, 1)
     return kb.as_markup()

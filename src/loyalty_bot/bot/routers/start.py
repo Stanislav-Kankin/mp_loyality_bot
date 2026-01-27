@@ -1,23 +1,31 @@
 from __future__ import annotations
 
 import asyncpg
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.filters.command import CommandObject
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import seller_main_menu, buyer_subscription_menu
+from loyalty_bot.bot.keyboards import buyer_gender_menu, buyer_subscription_menu, seller_main_menu
 from loyalty_bot.db.repo import (
-    ensure_customer,
+    get_customer,
     ensure_seller,
     shop_exists,
     shop_is_active,
     subscribe_customer_to_shop,
     unsubscribe_customer_from_shop,
+    update_customer_profile,
 )
 
 router = Router()
+
+
+class BuyerOnboarding(StatesGroup):
+    full_years = State()
+    gender = State()
 
 
 def _parse_shop_payload(args: str | None) -> int | None:
@@ -33,7 +41,7 @@ def _parse_shop_payload(args: str | None) -> int | None:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool) -> None:
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None:
         await message.answer("Ошибка: не удалось определить Telegram user id.")
@@ -51,8 +59,18 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
             await message.answer("Магазин сейчас отключён. Обратитесь к продавцу.")
             return
 
-        customer_id = await ensure_customer(pool, tg_id)
+        customer = await get_customer(pool, tg_id)
+        customer_id = int(customer["id"])
+
         await subscribe_customer_to_shop(pool, shop_id=shop_id, customer_id=customer_id)
+
+        # lightweight onboarding (only if not filled yet)
+        if customer.get("full_years") is None or customer.get("gender") is None:
+            await state.clear()
+            await state.update_data(shop_id=shop_id, customer_id=customer_id)
+            await state.set_state(BuyerOnboarding.full_years)
+            await message.answer("1) Сколько вам полных лет?")
+            return
 
         await message.answer(
             "Вы подписаны на уведомления магазина ✅\n\n"
@@ -74,8 +92,61 @@ async def cmd_start(message: Message, command: CommandObject, pool: asyncpg.Pool
     )
 
 
-@router.callback_query(lambda c: c.data and c.data.startswith("buyer:unsub:"))
-async def buyer_unsubscribe_cb(cb, pool: asyncpg.Pool) -> None:
+@router.message(BuyerOnboarding.full_years)
+async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("Введите число (например: 25).")
+        return
+
+    years = int(text)
+    if years < 1 or years > 120:
+        await message.answer("Введите возраст от 1 до 120.")
+        return
+
+    data = await state.get_data()
+    customer_id = data.get("customer_id")
+    if not isinstance(customer_id, int):
+        await state.clear()
+        await message.answer("Ошибка состояния. Перейдите по ссылке магазина ещё раз.")
+        return
+
+    await update_customer_profile(pool, customer_id, full_years=years)
+
+    await state.set_state(BuyerOnboarding.gender)
+    await message.answer("2) Укажите ваш пол:", reply_markup=buyer_gender_menu())
+
+
+@router.callback_query(BuyerOnboarding.gender, F.data.startswith("buyer:gender:"))
+async def buyer_onboarding_gender(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    code = cb.data.split(":")[-1]
+    if code not in {"m", "f", "o"}:
+        await cb.answer("Некорректный выбор", show_alert=True)
+        return
+
+    data = await state.get_data()
+    customer_id = data.get("customer_id")
+    shop_id = data.get("shop_id")
+
+    if not isinstance(customer_id, int) or not isinstance(shop_id, int):
+        await state.clear()
+        await cb.message.answer("Ошибка состояния. Перейдите по ссылке магазина ещё раз.")
+        await cb.answer()
+        return
+
+    await update_customer_profile(pool, customer_id, gender=code)
+    await state.clear()
+
+    await cb.message.answer(
+        "Спасибо! Вы подписаны ✅\n\n"
+        "Если захотите — можно отписаться кнопкой ниже.",
+        reply_markup=buyer_subscription_menu(shop_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("buyer:unsub:"))
+async def buyer_unsubscribe_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     raw_id = cb.data.split(":")[-1]
     if not raw_id.isdigit():
@@ -83,11 +154,8 @@ async def buyer_unsubscribe_cb(cb, pool: asyncpg.Pool) -> None:
         return
     shop_id = int(raw_id)
 
-    if not await shop_exists(pool, shop_id):
-        await cb.answer("Магазин не найден", show_alert=True)
-        return
-
-    customer_id = await ensure_customer(pool, tg_id)
+    customer = await get_customer(pool, tg_id)
+    customer_id = int(customer["id"])
     await unsubscribe_customer_from_shop(pool, shop_id=shop_id, customer_id=customer_id)
 
     await cb.message.edit_text("Вы отписались ✅")

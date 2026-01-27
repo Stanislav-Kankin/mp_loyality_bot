@@ -17,18 +17,60 @@ async def ensure_seller(pool: asyncpg.Pool, tg_user_id: int) -> int:
         return int(row["id"])
 
 
-async def ensure_customer(pool: asyncpg.Pool, tg_user_id: int) -> int:
+async def get_customer(pool: asyncpg.Pool, tg_user_id: int) -> dict:
+    """Ensure customer exists and return minimal profile."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO customers(tg_user_id)
             VALUES ($1)
             ON CONFLICT (tg_user_id) DO UPDATE SET tg_user_id = EXCLUDED.tg_user_id
-            RETURNING id;
+            RETURNING id, full_years, gender;
             """,
             tg_user_id,
         )
-        return int(row["id"])
+        return {
+            "id": int(row["id"]),
+            "full_years": row["full_years"],
+            "gender": row["gender"],
+        }
+
+
+async def ensure_customer(pool: asyncpg.Pool, tg_user_id: int) -> int:
+    customer = await get_customer(pool, tg_user_id)
+    return int(customer["id"])
+
+
+async def update_customer_profile(
+    pool: asyncpg.Pool,
+    customer_id: int,
+    *,
+    full_years: int | None = None,
+    gender: str | None = None,
+) -> None:
+    fields: list[str] = []
+    args: list[object] = []
+    idx = 1
+
+    if full_years is not None:
+        fields.append(f"full_years=${idx}")
+        args.append(full_years)
+        idx += 1
+
+    if gender is not None:
+        fields.append(f"gender=${idx}")
+        args.append(gender)
+        idx += 1
+
+    if fields:
+        fields.append("onboarded_at=now()")
+
+    if not fields:
+        return
+
+    args.append(customer_id)
+    async with pool.acquire() as conn:
+        await conn.execute(f"UPDATE customers SET {', '.join(fields)} WHERE id=${idx};", *args)
 
 
 async def subscribe_customer_to_shop(pool: asyncpg.Pool, shop_id: int, customer_id: int) -> None:
@@ -74,7 +116,6 @@ async def shop_is_active(pool: asyncpg.Pool, shop_id: int) -> bool:
 
 
 async def create_shop(pool: asyncpg.Pool, seller_tg_user_id: int, name: str, category: str) -> int:
-    # Ensure seller exists and create shop under it.
     async with pool.acquire() as conn:
         async with conn.transaction():
             seller_row = await conn.fetchrow(
@@ -159,58 +200,29 @@ async def get_shop_for_seller(pool: asyncpg.Pool, seller_tg_user_id: int, shop_i
         }
 
 
-# Admin helpers
-
-async def list_all_shops(pool: asyncpg.Pool, limit: int = 20) -> list[dict]:
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT sh.id, sh.name, sh.category, sh.is_active, sh.created_at, s.tg_user_id AS seller_tg_user_id
-            FROM shops sh
-            JOIN sellers s ON s.id = sh.seller_id
-            ORDER BY sh.created_at DESC, sh.id DESC
-            LIMIT $1;
-            """,
-            limit,
-        )
-        return [
-            {
-                "id": int(r["id"]),
-                "name": str(r["name"]),
-                "category": str(r["category"]),
-                "is_active": bool(r["is_active"]),
-                "created_at": r["created_at"],
-                "seller_tg_user_id": int(r["seller_tg_user_id"]),
-            }
-            for r in rows
-        ]
-
-
-async def get_shop_by_id(pool: asyncpg.Pool, shop_id: int) -> dict | None:
+async def get_shop_subscription_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT sh.id, sh.name, sh.category, sh.is_active, sh.created_at, s.tg_user_id AS seller_tg_user_id
-            FROM shops sh
-            JOIN sellers s ON s.id = sh.seller_id
-            WHERE sh.id=$1;
+            SELECT
+                COUNT(*) FILTER (WHERE status='subscribed') AS subscribed,
+                COUNT(*) FILTER (WHERE status='unsubscribed') AS unsubscribed,
+                COUNT(*) AS total
+            FROM shop_customers
+            WHERE shop_id=$1;
             """,
             shop_id,
         )
-        if row is None:
-            return None
         return {
-            "id": int(row["id"]),
-            "name": str(row["name"]),
-            "category": str(row["category"]),
-            "is_active": bool(row["is_active"]),
-            "created_at": row["created_at"],
-            "seller_tg_user_id": int(row["seller_tg_user_id"]),
+            "subscribed": int(row["subscribed"] or 0),
+            "unsubscribed": int(row["unsubscribed"] or 0),
+            "total": int(row["total"] or 0),
         }
 
 
+# Admin helpers (used by admin shop actions in shop card)
+
 async def update_shop(pool: asyncpg.Pool, shop_id: int, *, name: str | None = None, category: str | None = None) -> None:
-    # Minimal update: set provided fields only.
     fields = []
     args = []
     idx = 1

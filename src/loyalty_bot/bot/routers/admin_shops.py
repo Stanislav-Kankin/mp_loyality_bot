@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.db.repo import get_shop_by_id, set_shop_active, update_shop
+from loyalty_bot.db.repo import set_shop_active, update_shop
 
 router = Router()
 
@@ -38,7 +38,7 @@ async def admin_shop_disable(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 
 @router.callback_query(F.data.startswith("admin:shop:edit:"))
-async def admin_shop_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+async def admin_shop_edit_start(cb: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -49,26 +49,17 @@ async def admin_shop_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyn
         return
     shop_id = int(raw_id)
 
-    shop = await get_shop_by_id(pool, shop_id)
-    if shop is None:
-        await cb.answer("Магазин не найден", show_alert=True)
-        return
-
     await state.clear()
     await state.update_data(shop_id=shop_id)
     await state.set_state(AdminShopEdit.name)
 
-    await cb.message.answer(
-        f"Редактирование магазина #{shop_id}.\n"
-        f"Текущее название: {shop['name']}\n\n"
-        f"Введите новое название:"
-    )
+    await cb.message.answer(f"Редактирование магазина #{shop_id}.\n\nВведите новое название:")
     await cb.answer()
 
 
 @router.message(AdminShopEdit.name)
 async def admin_shop_edit_name(message: Message, state: FSMContext) -> None:
-    if not message.from_user or not _is_admin(message.from_user.id):
+    if not _is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
 
@@ -84,7 +75,7 @@ async def admin_shop_edit_name(message: Message, state: FSMContext) -> None:
 
 @router.message(AdminShopEdit.category)
 async def admin_shop_edit_category(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if not message.from_user or not _is_admin(message.from_user.id):
+    if not _is_admin(message.from_user.id):
         await message.answer("Нет доступа.")
         return
 

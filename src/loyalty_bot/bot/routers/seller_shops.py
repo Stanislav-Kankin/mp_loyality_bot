@@ -10,7 +10,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import seller_main_menu, shops_menu, shop_actions
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
-from loyalty_bot.db.repo import create_shop, get_shop_for_seller, list_seller_shops
+from loyalty_bot.db.repo import create_shop, get_shop_for_seller, get_shop_subscription_stats, list_seller_shops
 
 router = Router()
 
@@ -225,4 +225,41 @@ async def shop_qr(cb: CallbackQuery) -> None:
     file = BufferedInputFile(png_bytes, filename=f"shop_{shop_id}.png")
 
     await cb.message.answer_photo(photo=file, caption=f"QR для подписки на магазин\n\n{link}")
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("shop:stats:"))
+async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    shop = await get_shop_for_seller(pool, seller_tg_user_id=tg_id, shop_id=shop_id)
+    if shop is None:
+        await cb.answer("Магазин не найден", show_alert=True)
+        return
+
+    stats = await get_shop_subscription_stats(pool, shop_id)
+    text = (
+        f"📊 Подписчики магазина\n\n"
+        f"🏪 {shop['name']} (#{shop_id})\n\n"
+        f"✅ Подписано: {stats['subscribed']}\n"
+        f"🔕 Отписалось: {stats['unsubscribed']}\n"
+        f"👥 Всего записей: {stats['total']}\n\n"
+        f"UTM/клики добавим на этапе рассылок."
+    )
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
+    kb.adjust(1)
+
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer()
