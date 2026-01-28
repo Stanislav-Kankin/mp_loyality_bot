@@ -11,13 +11,13 @@ from aiogram.types import CallbackQuery, Message
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions
 from loyalty_bot.db.repo import (
-    list_seller_campaigns,
-    get_campaign_for_seller,
-    create_campaign_draft,
     start_campaign_sending,
-    ensure_seller,
-    get_seller_credits,
-    add_seller_credits,
+    mark_campaign_paid_test,
+    create_campaign_draft,
+    get_campaign_for_seller,
+    list_seller_campaigns,
+    list_seller_shops,
+    get_shop_for_seller,
 )
 
 def _status_label(status: str) -> str:
@@ -63,16 +63,6 @@ def _format_price(price_minor: int, currency: str) -> str:
     return f"{major:.2f} {currency}"
 
 
-def credits_buy_kb() -> 'InlineKeyboardMarkup':
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Купить 1", callback_data="credits:buy:1")
-    kb.button(text="Купить 10", callback_data="credits:buy:10")
-    kb.button(text="Купить 30", callback_data="credits:buy:30")
-    kb.button(text="⬅️ Назад", callback_data="campaigns:list")
-    kb.adjust(3, 1)
-    return kb.as_markup()
-
-
 def _format_dt(value: object) -> str:
     """Format datetimes from asyncpg records safely.
 
@@ -88,16 +78,6 @@ def _format_dt(value: object) -> str:
         return value.strftime("%Y-%m-%d")
     # Fallback (e.g., already a string)
     return str(value)
-
-
-def credits_buy_kb() -> 'InlineKeyboardMarkup':
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Купить 1", callback_data="credits:buy:1")
-    kb.button(text="Купить 10", callback_data="credits:buy:10")
-    kb.button(text="Купить 30", callback_data="credits:buy:30")
-    kb.button(text="⬅️ Назад", callback_data="campaigns:list")
-    kb.adjust(3, 1)
-    return kb.as_markup()
 
 
 def _format_dt(val: object) -> str:
@@ -273,9 +253,10 @@ async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         shop_name = str(c.get("shop_name", ""))
         if len(shop_name) > 18:
             shop_name = shop_name[:18] + "…"
+        status_h = _status_label(str(c.get("status", "")))
         dt = c.get("created_at")
         date_s = dt.date().isoformat() if dt else ""
-        items.append((c["id"], f"Рассылка #{c['id']} · {shop_name} ({date_s})"))
+        items.append((c["id"], f"#{c['id']} {status_h} · {shop_name} ({date_s})"))
 
     await cb.message.edit_text("Ваши рассылки (последние 10):", reply_markup=campaigns_list_kb(items))
     await cb.answer()
@@ -296,29 +277,33 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
     if camp is None:
-        await cb.answer("Рассылка не найдена", show_alert=True)
+        await cb.answer("Кампания не найдена", show_alert=True)
         return
 
-    preview = str(camp.get("text") or "")
+    preview = camp["text"]
     if len(preview) > 350:
         preview = preview[:350] + "…"
 
-    text = (
-        f"Рассылка №{camp['id']}\\n"
-        f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\\n"
-        f"<b>Создана:</b> {_format_dt(camp['created_at'])}\\n\\n"
-        f"<b>Текст:</b>\\n{html.escape(preview)}\\n\\n"
-        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}\\n"
-        f"<b>URL:</b> {html.escape(str(camp.get('url') or ''))}"
-    )
-
     await cb.message.edit_text(
-        text,
-        reply_markup=campaign_actions(campaign_id),
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
+    f"Рассылка №{camp['id']}\n"
+    f"<b>Статус:</b> {_status_label(camp['status'])}\n"
+    f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
+    f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
+    f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
+    f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
+    f"<b>URL:</b> {html.escape(camp['url'])}\n"
+    f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
+    reply_markup=campaign_actions(
+        campaign_id,
+        show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
+        show_send=(str(camp.get('status')) == 'paid'),
+    ),
+    parse_mode="HTML",
+    disable_web_page_preview=True,
+)
     await cb.answer()
+
+
 
 @router.callback_query(F.data.startswith("campaign:preview:"))
 async def campaign_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
@@ -418,15 +403,13 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     except ValueError as e:
         code = str(e)
         if code == "campaign_not_found":
-            await cb.answer("Рассылка не найдена", show_alert=True)
+            await cb.answer("Кампания не найдена", show_alert=True)
+            return
+        if code == "campaign_not_paid":
+            await cb.answer("Кампания не оплачена", show_alert=True)
             return
         if code == "no_credits":
-            credits = await get_seller_credits(pool, tg_user_id=tg_id)
-            await cb.message.answer(
-                f"У вас доступно {credits} активных рассылок. Купить ещё?",
-                reply_markup=credits_buy_kb(),
-            )
-            await cb.answer()
+            await cb.answer("Недостаточно рассылок на балансе", show_alert=True)
             return
         await cb.answer("Не удалось запустить рассылку", show_alert=True)
         return
@@ -434,29 +417,5 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await cb.answer("Запущено ✅")
     await cb.message.answer(
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
-        "Воркер отправит сообщения в фоне.",
+        "Воркер отправит сообщения в фоне."
     )
-
-@router.callback_query(F.data.startswith("shop:campaign:new:"))
-async def campaign_new_from_shop(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
-    raw_id = cb.data.split(":")[-1]
-    if not raw_id.isdigit():
-        await cb.answer("Некорректный магазин", show_alert=True)
-        return
-    shop_id = int(raw_id)
-
-    # Verify shop belongs to seller
-    shop = await get_shop_for_seller(pool, seller_tg_user_id=tg_id, shop_id=shop_id)
-    if shop is None:
-        await cb.answer("Магазин не найден", show_alert=True)
-        return
-
-    await state.clear()
-    await state.set_state(CampaignDraft.text)
-    await state.update_data(shop_id=shop_id)
-    await cb.message.answer(f"Создаём рассылку для магазина: {shop['name']}\n\nВведите текст рассылки:")
-    await cb.answer()

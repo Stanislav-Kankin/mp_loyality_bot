@@ -188,9 +188,16 @@ async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         return
 
     status = "✅ активен" if shop["is_active"] else "⛔️ отключён"
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    bot_username = (await cb.bot.get_me()).username
+    invite_url = _shop_deeplink(bot_username, shop_id)
     await cb.message.edit_text(
-        f"🏪 {shop['name']}\nКатегория: {shop['category']}\nID: {shop['id']}\nСтатус: {status}",
-        reply_markup=shop_actions(shop_id, is_admin=_is_admin(tg_id)),
+        f"🏪 {shop['name']}\n"
+        f"Категория: {shop['category']}\n"
+        f"ID: {shop['id']}\n"
+        f"Доступно рассылок: {credits}\n"
+        f"Статус: {status}",
+        reply_markup=shop_actions(shop_id, is_admin=_is_admin(tg_id), invite_url=invite_url),
     )
     await cb.answer()
 
