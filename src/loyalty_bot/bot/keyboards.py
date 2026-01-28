@@ -100,6 +100,13 @@ def campaign_actions(
     return kb.as_markup()
 
 
+def cancel_kb(callback_data: str = "cancel") -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❌ Отмена", callback_data=callback_data)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def skip_photo_kb(prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⏭ Пропустить", callback_data=f"{prefix}:skip")
