@@ -324,6 +324,7 @@ async def update_shop_welcome(
     shop_id: int,
     welcome_text: str,
     welcome_photo_file_id: str | None,
+    welcome_button_text: str | None,
     welcome_url: str | None,
 ) -> None:
     async with pool.acquire() as conn:
@@ -345,12 +346,14 @@ async def update_shop_welcome(
             UPDATE shops
             SET welcome_text=$2,
                 welcome_photo_file_id=$3,
-                welcome_url=$4
+                welcome_button_text=$4,
+                welcome_url=$5
             WHERE id=$1;
             """,
             shop_id,
             welcome_text,
             welcome_photo_file_id,
+            welcome_button_text,
             welcome_url,
         )
 
@@ -359,7 +362,7 @@ async def get_shop_welcome(pool: asyncpg.Pool, *, shop_id: int) -> dict | None:
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
             """
-            SELECT welcome_text, welcome_photo_file_id, welcome_url
+            SELECT welcome_text, welcome_photo_file_id, welcome_button_text, welcome_url
             FROM shops
             WHERE id=$1;
             """,
@@ -370,6 +373,7 @@ async def get_shop_welcome(pool: asyncpg.Pool, *, shop_id: int) -> dict | None:
         return {
             "welcome_text": str(r["welcome_text"] or ""),
             "welcome_photo_file_id": str(r["welcome_photo_file_id"] or "") or None,
+            "welcome_button_text": str(r["welcome_button_text"] or "") or None,
             "welcome_url": str(r["welcome_url"] or "") or None,
         }
 
@@ -498,40 +502,6 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
         ]
 
 
-async def list_shop_campaigns(
-    pool: asyncpg.Pool,
-    *,
-    seller_tg_user_id: int,
-    shop_id: int,
-    limit: int = 10,
-) -> list[dict]:
-    """List last campaigns for a specific shop owned by seller."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT c.id, c.status, c.created_at, c.shop_id
-            FROM campaigns c
-            JOIN shops sh ON sh.id = c.shop_id
-            JOIN sellers s ON s.id = sh.seller_id
-            WHERE s.tg_user_id=$1 AND c.shop_id=$2
-            ORDER BY c.created_at DESC, c.id DESC
-            LIMIT $3;
-            """,
-            seller_tg_user_id,
-            shop_id,
-            limit,
-        )
-        return [
-            {
-                "id": int(r["id"]),
-                "status": str(r["status"]),
-                "created_at": r["created_at"],
-                "shop_id": int(r["shop_id"]),
-            }
-            for r in rows
-        ]
-
-
 async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int) -> dict | None:
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
@@ -559,7 +529,6 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
             "url": str(r["url"]) if r["url"] is not None else "",
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
-            "photo_file_id": str(r["photo_file_id"]) if r["photo_file_id"] is not None else None,
         }
 
 
