@@ -42,15 +42,14 @@ async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int)
         kb = b.as_markup()
 
     if photo_file_id:
-        # Caption max is 1024
+        # UX: welcome должно быть одним сообщением. Caption max is 1024.
         caption = text[:1024] if text else None
         await message.answer_photo(photo=photo_file_id, caption=caption, reply_markup=kb)
-        if text and len(text) > 1024:
-            await message.answer(text[1024:])
         return
 
     if text:
-        await message.answer(text, reply_markup=kb)
+        # Text max is 4096
+        await message.answer(text[:4096], reply_markup=kb)
 
 
 

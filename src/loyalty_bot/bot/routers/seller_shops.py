@@ -368,7 +368,7 @@ async def shop_welcome_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Welcome ещё не настроен", show_alert=True)
         return
 
-    # отправляем превью отдельным сообщением (как получит покупатель)
+    # Превью должно быть ровно 1 сообщением (как получит покупатель)
     text = (welcome.get("welcome_text") or "").strip()
     photo_file_id = welcome.get("welcome_photo_file_id")
     btn_text = (welcome.get("welcome_button_text") or "").strip()
@@ -384,14 +384,12 @@ async def shop_welcome_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         kb = b.as_markup()
 
     if photo_file_id:
+        # Caption max is 1024
         caption = text[:1024] if text else None
-        await cb.message.answer("Пример welcome-сообщения для покупателя:")
         await cb.message.answer_photo(photo=photo_file_id, caption=caption, reply_markup=kb)
-        if text and len(text) > 1024:
-            await cb.message.answer(text[1024:])
     else:
-        await cb.message.answer("Пример welcome-сообщения для покупателя:")
-        await cb.message.answer(text or "(пусто)", reply_markup=kb)
+        # Text max is 4096
+        await cb.message.answer((text or "(пусто)")[:4096], reply_markup=kb)
 
     await cb.answer()
 
@@ -529,7 +527,7 @@ async def shop_welcome_button_text(message: Message, state: FSMContext, pool: as
         return
 
     await state.update_data(welcome_button_text=btn)
-    await state.set_state(ShopWelcome.button_text)
+    await state.set_state(ShopWelcome.url)
     await message.answer(
         f"Введите ссылку (URL), которую получит покупатель кнопкой «{btn}».\n\n"
         "Формат: https://...",
