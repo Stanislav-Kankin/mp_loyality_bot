@@ -562,6 +562,7 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
             "text": str(r["text"]),
             "button_title": str(r["button_title"]) if r["button_title"] is not None else "",
             "url": str(r["url"]) if r["url"] is not None else "",
+            "photo_file_id": str(r["photo_file_id"] or "") or None,
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
         }

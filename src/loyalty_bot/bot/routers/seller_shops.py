@@ -499,7 +499,7 @@ async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.
 
     photo_file_id = message.photo[-1].file_id
     await state.update_data(welcome_photo_file_id=photo_file_id)
-    await state.set_state(ShopWelcome.url)
+    await state.set_state(ShopWelcome.button_text)
     await message.answer(
         "Введите текст кнопки, которую увидит покупатель (как в рассылке).\n\n"
         "Например: Открыть магазин / Получить скидку / Перейти на сайт",
@@ -529,7 +529,7 @@ async def shop_welcome_button_text(message: Message, state: FSMContext, pool: as
         return
 
     await state.update_data(welcome_button_text=btn)
-    await state.set_state(ShopWelcome.url)
+    await state.set_state(ShopWelcome.button_text)
     await message.answer(
         f"Введите ссылку (URL), которую получит покупатель кнопкой «{btn}».\n\n"
         "Формат: https://...",
