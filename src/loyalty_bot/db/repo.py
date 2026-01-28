@@ -431,7 +431,7 @@ async def create_campaign_draft(
     text: str,
     button_title: str,
     url: str,
-    photo_file_id: str | None = None,
+    photo_file_id: str | None,
     price_minor: int,
     currency: str,
 ) -> int:
@@ -519,6 +519,7 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
             "text": str(r["text"]),
             "button_title": str(r["button_title"]) if r["button_title"] is not None else "",
             "url": str(r["url"]) if r["url"] is not None else "",
+            "photo_file_id": str(r["photo_file_id"]) if r["photo_file_id"] is not None else None,
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
         }
@@ -570,7 +571,7 @@ async def start_campaign_sending(
 ) -> int:
     """Start campaign sending.
 
-    - Verifies campaign belongs to seller and is not already sending.
+    - Verifies campaign belongs to seller and is in "paid" status.
     - Consumes 1 seller credit atomically.
     - Enqueues deliveries for all subscribed customers of the campaign shop.
 
@@ -592,9 +593,8 @@ async def start_campaign_sending(
             )
             if camp is None:
                 raise ValueError("campaign_not_found")
-            status = str(camp["status"] or "")
-            if status == "sending":
-                raise ValueError("campaign_already_sending")
+            if str(camp["status"]) != "paid":
+                raise ValueError("campaign_not_paid")
 
             seller_id = int(camp["seller_id"])
 
