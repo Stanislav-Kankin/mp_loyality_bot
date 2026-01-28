@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import asyncpg
 from aiogram import F, Router
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -37,6 +39,16 @@ class ShopWelcome(StatesGroup):
 def _is_http_url(value: str) -> bool:
     v = value.strip().lower()
     return v.startswith("http://") or v.startswith("https://")
+
+
+async def _safe_answer(message: Message, text: str, **kwargs) -> None:
+    """Send a message with a minimal retry on transient network errors."""
+    try:
+        await message.answer(text, **kwargs)
+    except TelegramNetworkError:
+        # Telegram sometimes resets connections; retry once.
+        await asyncio.sleep(0.8)
+        await message.answer(text, **kwargs)
 
 
 
@@ -428,7 +440,8 @@ async def shop_welcome_text(message: Message, state: FSMContext) -> None:
         b.adjust(1)
         markup = b.as_markup()
 
-    await message.answer(
+    await _safe_answer(
+        message,
         "Пришлите картинку для welcome-сообщения или нажмите «Пропустить».",
         reply_markup=markup,
     )

@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, skip_photo_kb
@@ -16,6 +17,7 @@ from loyalty_bot.db.repo import (
     create_campaign_draft,
     get_campaign_for_seller,
     list_seller_campaigns,
+    list_shop_campaigns,
     list_seller_shops,
     get_shop_for_seller,
 )
@@ -37,8 +39,48 @@ def _status_label(status: str) -> str:
 
 router = Router()
 
+def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Новая рассылка", callback_data=f"shop:campaigns:new:{shop_id}")
+    kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
+    kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
+    kb.adjust(1)
+    return kb
+
+
 @router.callback_query(F.data.startswith("shop:campaigns:"))
-async def campaign_new_from_shop(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+async def shop_campaigns_menu(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    parts = cb.data.split(":")
+    # Expected: shop:campaigns:<shop_id>
+    if len(parts) != 3:
+        await cb.answer("Некорректная команда", show_alert=True)
+        return
+    raw_id = parts[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    shop = await get_shop_for_seller(pool, seller_tg_user_id=tg_id, shop_id=shop_id)
+    if shop is None or not shop.get("is_active", True):
+        await cb.answer("Магазин не найден/отключён", show_alert=True)
+        return
+
+    await state.clear()
+    await cb.message.answer(
+        f"📣 Рассылки магазина: <b>{html.escape(shop.get('name') or shop.get('shop_name') or '')}</b>",
+        reply_markup=_shop_campaigns_menu_kb(shop_id).as_markup(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("shop:campaigns:new:"))
+async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -59,6 +101,47 @@ async def campaign_new_from_shop(cb: CallbackQuery, state: FSMContext, pool: asy
     await state.update_data(shop_id=shop_id)
     await state.set_state(CampaignCreate.text)
     await cb.message.answer("Введите текст рассылки:")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("shop:campaigns:list:"))
+async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    shop = await get_shop_for_seller(pool, seller_tg_user_id=tg_id, shop_id=shop_id)
+    if shop is None or not shop.get("is_active", True):
+        await cb.answer("Магазин не найден/отключён", show_alert=True)
+        return
+
+    await state.clear()
+    items = await list_shop_campaigns(pool, seller_tg_user_id=tg_id, shop_id=shop_id, limit=10)
+    if not items:
+        await cb.message.answer(
+            "У вас пока нет рассылок для этого магазина.",
+            reply_markup=_shop_campaigns_menu_kb(shop_id).as_markup(),
+        )
+        await cb.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    for c in items:
+        title = f"#{c['id']} • {c['created_at'].strftime('%Y-%m-%d')}"
+        kb.button(text=title, callback_data=f"campaign:open:{c['id']}")
+    kb.button(text="⬅️ Назад", callback_data=f"shop:campaigns:{shop_id}")
+    kb.adjust(1)
+    await cb.message.answer(
+        f"Ваши рассылки для <b>{html.escape(str(shop.get('name') or shop.get('shop_name') or 'магазина'))}</b> (последние 10):",
+        reply_markup=kb.as_markup(),
+    )
     await cb.answer()
 
 
