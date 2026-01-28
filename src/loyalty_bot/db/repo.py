@@ -431,7 +431,7 @@ async def create_campaign_draft(
     text: str,
     button_title: str,
     url: str,
-    photo_file_id: str | None,
+    photo_file_id: str | None = None,
     price_minor: int,
     currency: str,
 ) -> int:
@@ -570,7 +570,7 @@ async def start_campaign_sending(
 ) -> int:
     """Start campaign sending.
 
-    - Verifies campaign belongs to seller and is in "paid" status.
+    - Verifies campaign belongs to seller and is not already sending.
     - Consumes 1 seller credit atomically.
     - Enqueues deliveries for all subscribed customers of the campaign shop.
 
@@ -592,8 +592,9 @@ async def start_campaign_sending(
             )
             if camp is None:
                 raise ValueError("campaign_not_found")
-            if str(camp["status"]) != "paid":
-                raise ValueError("campaign_not_paid")
+            status = str(camp["status"] or "")
+            if status == "sending":
+                raise ValueError("campaign_already_sending")
 
             seller_id = int(camp["seller_id"])
 

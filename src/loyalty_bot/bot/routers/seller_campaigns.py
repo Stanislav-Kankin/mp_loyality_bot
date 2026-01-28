@@ -9,7 +9,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, skip_photo_kb
+from loyalty_bot.bot.keyboards import (
+    campaigns_menu,
+    campaigns_list_kb,
+    campaign_actions,
+    cancel_kb,
+    photo_step_kb,
+)
 from loyalty_bot.db.repo import (
     start_campaign_sending,
     mark_campaign_paid_test,
@@ -58,7 +64,10 @@ async def campaign_new_from_shop(cb: CallbackQuery, state: FSMContext, pool: asy
     await state.clear()
     await state.update_data(shop_id=shop_id)
     await state.set_state(CampaignCreate.text)
-    await cb.message.answer("Введите текст рассылки:")
+    await cb.message.answer(
+        "Введите текст рассылки:",
+        reply_markup=cancel_kb("campaigncreate:cancel"),
+    )
     await cb.answer()
 
 
@@ -87,23 +96,6 @@ def _format_price(price_minor: int, currency: str) -> str:
     major = price_minor / 100
     # Keep as plain number + currency (works for RUB, USD, etc.)
     return f"{major:.2f} {currency}"
-
-
-def _format_dt(value: object) -> str:
-    """Format datetimes from asyncpg records safely.
-
-    asyncpg may return datetime/date objects (with or without tz). We keep formatting
-    intentionally simple and stable for MVP UI.
-    """
-
-    if value is None:
-        return "—"
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M")
-    if isinstance(value, date):
-        return value.strftime("%Y-%m-%d")
-    # Fallback (e.g., already a string)
-    return str(value)
 
 
 def _format_dt(val: object) -> str:
@@ -173,7 +165,10 @@ async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignCreate.text)
     await state.update_data(shop_id=shop_id)
 
-    await cb.message.edit_text("Введите текст рассылки (сообщение, которое увидят покупатели):")
+    await cb.message.edit_text(
+        "Введите текст рассылки (сообщение, которое увидят покупатели):",
+        reply_markup=cancel_kb("campaigncreate:cancel"),
+    )
     await cb.answer()
 
 
@@ -186,32 +181,54 @@ async def campaigns_text(message: Message, state: FSMContext) -> None:
 
     text = (message.text or "").strip()
     if len(text) < 1 or len(text) > 3500:
-        await message.answer("Текст должен быть от 1 до 3500 символов. Введите ещё раз:")
+        await message.answer(
+            "Текст должен быть от 1 до 3500 символов. Введите ещё раз:",
+            reply_markup=cancel_kb("campaigncreate:cancel"),
+        )
         return
 
     await state.update_data(text=text)
-    await state.set_state(CampaignCreate.button_title)
-    await message.answer("Введите название кнопки (например: Открыть ссылку):")
+    await state.set_state(CampaignCreate.photo)
+    await message.answer(
+        "Пришлите картинку для рассылки или нажмите «Пропустить».",
+        reply_markup=photo_step_kb("campaignphoto", "campaigncreate:cancel"),
+    )
 
+
+
+@router.callback_query(F.data == "campaigncreate:cancel")
+async def campaigncreate_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await cb.message.answer("Отменено ✅", reply_markup=campaigns_menu())
+    await cb.answer()
 
 
 @router.callback_query(F.data == "campaignphoto:skip")
 async def campaigns_create_photo_skip(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(photo_file_id=None)
     await state.set_state(CampaignCreate.button_title)
-    await cb.message.answer("Введите название кнопки:")
+    await cb.message.answer(
+        "Введите название кнопки:",
+        reply_markup=cancel_kb("campaigncreate:cancel"),
+    )
     await cb.answer()
 
 
 @router.message(CampaignCreate.photo)
 async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
     if not message.photo:
-        await message.answer("Пришлите картинку (как фото) или нажмите «Пропустить».")
+        await message.answer(
+            "Пришлите картинку (как фото) или нажмите «Пропустить».",
+            reply_markup=photo_step_kb("campaignphoto", "campaigncreate:cancel"),
+        )
         return
     photo_file_id = message.photo[-1].file_id
     await state.update_data(photo_file_id=photo_file_id)
     await state.set_state(CampaignCreate.button_title)
-    await message.answer("Введите название кнопки:")
+    await message.answer(
+        "Введите название кнопки:",
+        reply_markup=cancel_kb("campaigncreate:cancel"),
+    )
 
 
 @router.message(CampaignCreate.button_title)
@@ -223,12 +240,18 @@ async def campaigns_button_title(message: Message, state: FSMContext) -> None:
 
     title = (message.text or "").strip()
     if len(title) < 1 or len(title) > 64:
-        await message.answer("Название кнопки должно быть 1..64 символа. Введите ещё раз:")
+        await message.answer(
+            "Название кнопки должно быть 1..64 символа. Введите ещё раз:",
+            reply_markup=cancel_kb("campaigncreate:cancel"),
+        )
         return
 
     await state.update_data(button_title=title)
     await state.set_state(CampaignCreate.url)
-    await message.answer("Введите URL (http/https), который будет отправлен после нажатия кнопки:")
+    await message.answer(
+        "Введите URL (http/https), который будет отправлен после нажатия кнопки:",
+        reply_markup=cancel_kb("campaigncreate:cancel"),
+    )
 
 
 @router.message(CampaignCreate.url)
@@ -240,13 +263,17 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
 
     url = (message.text or "").strip()
     if not _is_valid_url(url):
-        await message.answer("Некорректный URL. Нужен http/https. Введите ещё раз:")
+        await message.answer(
+            "Некорректный URL. Нужен http/https. Введите ещё раз:",
+            reply_markup=cancel_kb("campaigncreate:cancel"),
+        )
         return
 
     data = await state.get_data()
     shop_id = data.get("shop_id")
     text = data.get("text")
     button_title = data.get("button_title")
+    photo_file_id = data.get("photo_file_id")
 
     if not isinstance(shop_id, int) or not isinstance(text, str) or not isinstance(button_title, str):
         await state.clear()
@@ -260,23 +287,24 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         text=text,
         button_title=button_title,
         url=url,
+        photo_file_id=str(photo_file_id) if photo_file_id else None,
         price_minor=settings.price_per_campaign_minor,
         currency=settings.currency,
     )
     await state.clear()
 
     await message.answer(
-        "Черновик рассылки создан ✅\n\n"
+        "Рассылка создана ✅\n\n"
         f"ID кампании: {campaign_id}\n"
         f"Текст: {text[:200]}{'…' if len(text) > 200 else ''}\n"
         f"Кнопка: {button_title}\n"
         f"URL: {url}\n\n"
         f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}\n"
-        "Оплата будет на следующем этапе.",
+        "Готово к запуску.",
         reply_markup=campaign_actions(
             campaign_id,
             show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
-            show_send=False,
+            show_send=True,
         ),
     )
 
@@ -299,10 +327,9 @@ async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         shop_name = str(c.get("shop_name", ""))
         if len(shop_name) > 18:
             shop_name = shop_name[:18] + "…"
-        status_h = _status_label(str(c.get("status", "")))
         dt = c.get("created_at")
         date_s = dt.date().isoformat() if dt else ""
-        items.append((c["id"], f"#{c['id']} {status_h} · {shop_name} ({date_s})"))
+        items.append((c["id"], f"#{c['id']} · {shop_name} ({date_s})"))
 
     await cb.message.edit_text("Ваши рассылки (последние 10):", reply_markup=campaigns_list_kb(items))
     await cb.answer()
@@ -332,7 +359,6 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await cb.message.edit_text(
     f"Рассылка №{camp['id']}\n"
-    f"<b>Статус:</b> {_status_label(camp['status'])}\n"
     f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
     f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
     f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
@@ -342,7 +368,7 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     reply_markup=campaign_actions(
         campaign_id,
         show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
-        show_send=(str(camp.get('status')) == 'paid'),
+        show_send=True,
     ),
     parse_mode="HTML",
     disable_web_page_preview=True,
@@ -462,8 +488,8 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         if code == "campaign_not_found":
             await cb.answer("Кампания не найдена", show_alert=True)
             return
-        if code == "campaign_not_paid":
-            await cb.answer("Кампания не оплачена", show_alert=True)
+        if code == "campaign_already_sending":
+            await cb.answer("Рассылка уже запущена", show_alert=True)
             return
         if code == "no_credits":
             await cb.answer("Недостаточно рассылок на балансе", show_alert=True)
