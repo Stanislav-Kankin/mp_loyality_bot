@@ -41,14 +41,10 @@ def _calc_backoff_seconds(attempt: int) -> int:
     return max(1, seconds)
 
 
-def _build_campaign_kb(*, button_title: str, url: str) -> InlineKeyboardBuilder:
+def _build_campaign_kb(*, url: str, button_title: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     title = (button_title or "").strip() or "Открыть ссылку"
-    u = (url or "").strip()
-    if not u:
-        # Fallback: no url configured; show nothing
-        return kb
-    kb.button(text=title, url=u)
+    kb.button(text=title, url=(url or ""))
     kb.adjust(1)
     return kb
 
@@ -59,15 +55,27 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
     tg_user_id = int(item["tg_user_id"])
     text = str(item.get("text") or "")
     button_title = str(item.get("button_title") or "")
+    url = str(item.get("url") or "")
+    photo_file_id = item.get("photo_file_id")
     attempt = int(item.get("attempt") or 1)
 
     try:
-        msg = await bot.send_message(
-            chat_id=tg_user_id,
-            text=text,
-            reply_markup=_build_campaign_kb(button_title=button_title, url=str(item.get('url') or '')).as_markup() if (item.get('url') or '').strip() else None,
-            disable_web_page_preview=True,
-        )
+        if photo_file_id:
+            msg = await bot.send_photo(
+                chat_id=tg_user_id,
+                photo=str(photo_file_id),
+                caption=text[:1024] if text else None,
+                reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
+            )
+            if len(text) > 1024:
+                await bot.send_message(chat_id=tg_user_id, text=text[1024:], disable_web_page_preview=True)
+        else:
+            msg = await bot.send_message(
+                chat_id=tg_user_id,
+                text=text,
+                reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
+                disable_web_page_preview=True,
+            )
         await mark_delivery_sent(pool, delivery_id=delivery_id, campaign_id=campaign_id, tg_message_id=int(msg.message_id))
         return
 

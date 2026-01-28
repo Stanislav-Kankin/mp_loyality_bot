@@ -10,7 +10,15 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import seller_main_menu, shops_menu, shop_actions, skip_photo_kb
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
-from loyalty_bot.db.repo import create_shop, get_shop_for_seller, get_shop_subscription_stats, list_seller_shops, update_shop_welcome
+from loyalty_bot.db.repo import (
+    create_shop,
+    ensure_seller,
+    get_seller_credits,
+    get_shop_for_seller,
+    get_shop_subscription_stats,
+    list_seller_shops,
+    update_shop_welcome,
+)
 
 router = Router()
 
@@ -19,10 +27,10 @@ class ShopCreate(StatesGroup):
     name = State()
     category = State()
 
-
 class ShopWelcome(StatesGroup):
     text = State()
     photo = State()
+
 
 
 def _is_admin(tg_id: int) -> bool:
@@ -38,21 +46,27 @@ def _shop_deeplink(bot_username: str, shop_id: int) -> str:
 
 
 @router.message(Command("seller"))
-async def seller_home_cmd(message: Message) -> None:
+async def seller_home_cmd(message: Message, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not _is_seller(tg_id):
         await message.answer("Нет доступа.")
         return
-    await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+
+    await ensure_seller(pool, tg_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    await message.answer(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
 
 
 @router.callback_query(F.data == "seller:home")
-async def seller_home_cb(cb: CallbackQuery) -> None:
+async def seller_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Панель селлера:", reply_markup=seller_main_menu())
+
+    await ensure_seller(pool, tg_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    await cb.message.edit_text(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
     await cb.answer()
 
 
@@ -179,9 +193,10 @@ async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     status = "✅ активен" if shop["is_active"] else "⛔️ отключён"
     await cb.message.edit_text(
-        f"🏪 {shop['name']}\nКатегория: {shop['category']}\nID: {shop['id']}\nСтатус: {status}",
+        f"🏪 {shop['name']}\nКатегория: {shop['category']}\nID: {shop['id']}\nДоступно рассылок: {credits}\nСтатус: {status}",
         reply_markup=shop_actions(shop_id, is_admin=_is_admin(tg_id)),
     )
     await cb.answer()
@@ -265,10 +280,11 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await cb.answer()
 
 
+
 @router.callback_query(F.data.startswith("shop:welcome:"))
 async def shop_welcome_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if tg_id not in settings.seller_ids_set and tg_id not in settings.admin_ids_set:
+    if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -283,42 +299,33 @@ async def shop_welcome_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
-    await state.clear()
-    await state.update_data(shop_id=shop_id)
     await state.set_state(ShopWelcome.text)
-
+    await state.update_data(shop_id=shop_id)
     await cb.message.answer(
-        "Введите welcome-сообщение для покупателей. "
-        "Оно будет показано после короткой анкеты (возраст/пол) при первом входе по ссылке/QR."
+        "Введите welcome-текст для покупателей.\n\n"
+        "Например: какие бонусы получит клиент (промокод, скидка, подарки и т.д.)."
     )
     await cb.answer()
 
-
 @router.message(ShopWelcome.text)
 async def shop_welcome_text(message: Message, state: FSMContext) -> None:
-    tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or (tg_id not in settings.seller_ids_set and tg_id not in settings.admin_ids_set):
-        await message.answer("Нет доступа.")
-        return
-
     text = (message.text or "").strip()
-    if len(text) < 1 or len(text) > 3500:
-        await message.answer("Текст должен быть от 1 до 3500 символов. Введите ещё раз:")
+    if not text:
+        await message.answer("Текст пустой. Введите welcome-текст.")
         return
 
     await state.update_data(welcome_text=text)
     await state.set_state(ShopWelcome.photo)
-
     await message.answer(
         "Пришлите картинку для welcome-сообщения или нажмите «Пропустить».",
-        reply_markup=skip_photo_kb("shop:welcome:skip_photo"),
+        reply_markup=skip_photo_kb("shopwelcome"),
     )
 
 
-@router.callback_query(ShopWelcome.photo, F.data == "shop:welcome:skip_photo")
+@router.callback_query(F.data == "shopwelcome:skip")
 async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if tg_id not in settings.seller_ids_set and tg_id not in settings.admin_ids_set:
+    if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -328,21 +335,26 @@ async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: as
 
     if not isinstance(shop_id, int) or not isinstance(welcome_text, str):
         await state.clear()
-        await cb.message.answer("Ошибка состояния. Откройте магазин и попробуйте ещё раз.")
+        await cb.message.answer("Ошибка состояния. Попробуйте ещё раз.")
         await cb.answer()
         return
 
-    await update_shop_welcome(pool, seller_tg_user_id=tg_id, shop_id=shop_id, welcome_text=welcome_text)
+    await update_shop_welcome(
+        pool,
+        seller_tg_user_id=tg_id,
+        shop_id=shop_id,
+        welcome_text=welcome_text,
+        welcome_photo_file_id=None,
+    )
     await state.clear()
-    await cb.message.answer("Welcome-сообщение сохранено ✅")
+    await cb.message.answer("Welcome-сообщение обновлено ✅")
     await cb.answer()
 
 
 @router.message(ShopWelcome.photo)
 async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or (tg_id not in settings.seller_ids_set and tg_id not in settings.admin_ids_set):
-        await message.answer("Нет доступа.")
+    tg_id = message.from_user.id
+    if not _is_seller(tg_id):
         return
 
     data = await state.get_data()
@@ -350,20 +362,20 @@ async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.
     welcome_text = data.get("welcome_text")
     if not isinstance(shop_id, int) or not isinstance(welcome_text, str):
         await state.clear()
-        await message.answer("Ошибка состояния. Откройте магазин и попробуйте ещё раз.")
+        await message.answer("Ошибка состояния. Попробуйте ещё раз.")
         return
 
     if not message.photo:
-        await message.answer("Пришлите именно картинку (photo) или нажмите «Пропустить».")
+        await message.answer("Пришлите картинку (как фото) или нажмите «Пропустить».")
         return
 
-    file_id = message.photo[-1].file_id
+    photo_file_id = message.photo[-1].file_id
     await update_shop_welcome(
         pool,
         seller_tg_user_id=tg_id,
         shop_id=shop_id,
         welcome_text=welcome_text,
-        welcome_photo_file_id=file_id,
+        welcome_photo_file_id=photo_file_id,
     )
     await state.clear()
-    await message.answer("Welcome-сообщение (с картинкой) сохранено ✅")
+    await message.answer("Welcome-сообщение обновлено ✅")

@@ -13,6 +13,7 @@ from loyalty_bot.bot.keyboards import buyer_gender_menu, buyer_subscription_menu
 from loyalty_bot.db.repo import (
     get_customer,
     ensure_seller,
+    get_seller_credits,
     shop_exists,
     shop_is_active,
     subscribe_customer_to_shop,
@@ -22,6 +23,25 @@ from loyalty_bot.db.repo import (
 )
 
 router = Router()
+
+async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int) -> None:
+    welcome = await get_shop_welcome(pool, shop_id=shop_id)
+    if not welcome:
+        return
+    text = (welcome.get("welcome_text") or "").strip()
+    photo_file_id = welcome.get("welcome_photo_file_id")
+
+    if photo_file_id:
+        # Caption max is 1024
+        caption = text[:1024] if text else None
+        await message.answer_photo(photo=photo_file_id, caption=caption)
+        if text and len(text) > 1024:
+            await message.answer(text[1024:])
+        return
+
+    if text:
+        await message.answer(text)
+
 
 
 class BuyerOnboarding(StatesGroup):
@@ -41,26 +61,6 @@ def _parse_shop_payload(args: str | None) -> int | None:
     return int(raw)
 
 
-
-
-async def _send_welcome(target: Message, pool: asyncpg.Pool, shop_id: int) -> None:
-    shop = await get_shop_welcome(pool, shop_id)
-    if not shop:
-        return
-    text = (shop.get("welcome_text") or "").strip()
-    photo = (shop.get("welcome_photo_file_id") or "").strip()
-
-    if not text and not photo:
-        return
-
-    if photo:
-        # caption max 1024; keep safe
-        caption = text[:1024] if text else None
-        await target.answer_photo(photo=photo, caption=caption)
-        if text and len(text) > 1024:
-            await target.answer(text[1024:])
-    else:
-        await target.answer(text)
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
@@ -98,12 +98,18 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
             "Если захотите — можно отписаться кнопкой ниже.",
             reply_markup=buyer_subscription_menu(shop_id),
         )
+        await _send_shop_welcome(message, pool, shop_id)
         return
 
     # Seller flow (allowlist from env)
     if tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set:
         await ensure_seller(pool, tg_id)
-        await message.answer("Панель селлера:", reply_markup=seller_main_menu())
+        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+        await message.answer(
+            f"Панель селлера:\n"
+            f"Доступно рассылок: {credits}",
+            reply_markup=seller_main_menu(),
+        )
         return
 
     await message.answer(
@@ -127,7 +133,8 @@ async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool:
 
     data = await state.get_data()
     customer_id = data.get("customer_id")
-    if not isinstance(customer_id, int):
+    shop_id = data.get("shop_id")
+    if not isinstance(customer_id, int) or not isinstance(shop_id, int):
         await state.clear()
         await message.answer("Ошибка состояния. Перейдите по ссылке магазина ещё раз.")
         return
@@ -135,12 +142,6 @@ async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool:
     await update_customer_profile(pool, customer_id, full_years=years)
 
     await state.set_state(BuyerOnboarding.gender)
-    data2 = await state.get_data()
-    shop_id = data2.get("shop_id")
-    if not isinstance(shop_id, int):
-        await state.clear()
-        await message.answer("Ошибка состояния. Перейдите по ссылке магазина ещё раз.")
-        return
     await message.answer("2) Укажите ваш пол:", reply_markup=buyer_gender_menu(shop_id))
 
 
@@ -164,13 +165,14 @@ async def buyer_onboarding_gender(cb: CallbackQuery, state: FSMContext, pool: as
     await update_customer_profile(pool, customer_id, gender=code)
     await state.clear()
 
-    await _send_welcome(cb.message, pool, shop_id)
-
     await cb.message.answer(
         "Спасибо! Вы подписаны ✅\n\n"
         "Если захотите — можно отписаться кнопкой ниже.",
         reply_markup=buyer_subscription_menu(shop_id),
     )
+
+    await _send_shop_welcome(cb.message, pool, shop_id)
+
     await cb.answer()
 
 

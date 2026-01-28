@@ -26,13 +26,14 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
     kb = InlineKeyboardBuilder()
     kb.button(text="📎 Ссылка", callback_data=f"shop:link:{shop_id}")
     kb.button(text="🔳 QR", callback_data=f"shop:qr:{shop_id}")
-    kb.button(text="👥 Подписчики", callback_data=f"shop:stats:{shop_id}")
+    kb.button(text="📣 Рассылки", callback_data=f"shop:campaigns:{shop_id}")
     kb.button(text="🎁 Welcome", callback_data=f"shop:welcome:{shop_id}")
+    kb.button(text="👥 Подписчики", callback_data=f"shop:stats:{shop_id}")
     if is_admin:
         kb.button(text="✏️ Редактировать", callback_data=f"admin:shop:edit:{shop_id}")
         kb.button(text="🗑 Отключить", callback_data=f"admin:shop:disable:{shop_id}")
     kb.button(text="⬅️ К списку", callback_data="shops:list")
-    kb.adjust(2, 2, 2 if is_admin else 0, 1)
+    kb.adjust(2, 2, 1, 2 if is_admin else 0, 1)
     return kb.as_markup()
 
 
@@ -70,17 +71,26 @@ def campaigns_list_kb(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def campaign_actions(campaign_id: int) -> InlineKeyboardMarkup:
+def campaign_actions(
+    campaign_id: int,
+    *,
+    show_test: bool = False,
+    show_send: bool = False,
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
     kb.button(text="💳 Оплатить", callback_data=f"campaign:pay:stub:{campaign_id}")
+    if show_test:
+        kb.button(text="✅ TEST: оплатить", callback_data=f"campaign:pay:test:{campaign_id}")
+    if show_send:
+        kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
     kb.button(text="⬅️ Назад", callback_data="campaigns:list")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def skip_photo_kb(callback_data: str) -> InlineKeyboardMarkup:
+def skip_photo_kb(prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="⏭ Пропустить", callback_data=callback_data)
+    kb.button(text="⏭ Пропустить", callback_data=f"{prefix}:skip")
     kb.adjust(1)
     return kb.as_markup()
