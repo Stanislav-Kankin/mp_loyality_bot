@@ -502,6 +502,41 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
         ]
 
 
+async def list_shop_campaigns(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    shop_id: int,
+    limit: int = 10,
+) -> list[dict]:
+    """Return last campaigns for a specific shop owned by seller."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.id, c.status, c.created_at, c.shop_id, sh.name AS shop_name
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1 AND sh.id=$2
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT $3;
+            """,
+            seller_tg_user_id,
+            shop_id,
+            limit,
+        )
+        return [
+            {
+                "id": int(r["id"]),
+                "status": str(r["status"]),
+                "created_at": r["created_at"],
+                "shop_id": int(r["shop_id"]),
+                "shop_name": str(r["shop_name"]),
+            }
+            for r in rows
+        ]
+
+
 async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int) -> dict | None:
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
