@@ -41,10 +41,14 @@ def _calc_backoff_seconds(attempt: int) -> int:
     return max(1, seconds)
 
 
-def _build_campaign_kb(*, url: str, button_title: str) -> InlineKeyboardBuilder:
+def _build_campaign_kb(*, button_title: str, url: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     title = (button_title or "").strip() or "Открыть ссылку"
-    kb.button(text=title, url=url)
+    u = (url or "").strip()
+    if not u:
+        # Fallback: no url configured; show nothing
+        return kb
+    kb.button(text=title, url=u)
     kb.adjust(1)
     return kb
 
@@ -61,7 +65,7 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
         msg = await bot.send_message(
             chat_id=tg_user_id,
             text=text,
-            reply_markup=_build_campaign_kb(url=str(item.get('url') or ''), button_title=button_title).as_markup(),
+            reply_markup=_build_campaign_kb(button_title=button_title, url=str(item.get('url') or '')).as_markup() if (item.get('url') or '').strip() else None,
             disable_web_page_preview=True,
         )
         await mark_delivery_sent(pool, delivery_id=delivery_id, campaign_id=campaign_id, tg_message_id=int(msg.message_id))

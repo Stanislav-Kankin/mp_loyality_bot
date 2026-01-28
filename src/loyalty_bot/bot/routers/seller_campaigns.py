@@ -17,7 +17,6 @@ from loyalty_bot.db.repo import (
     get_campaign_for_seller,
     list_seller_campaigns,
     list_seller_shops,
-    get_shop_for_seller,
 )
 
 def _status_label(status: str) -> str:
@@ -326,37 +325,23 @@ async def campaign_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=camp["button_title"] or "Открыть ссылку", callback_data=f"preview:open:{campaign_id}")
+    title = (camp["button_title"] or "").strip() or "Открыть ссылку"
+    kb.button(text=title, url=str(camp["url"]))
     kb.adjust(1)
 
     await cb.message.answer("Пример сообщения для покупателя:")
-    await cb.message.answer(camp["text"], reply_markup=kb.as_markup())
+    await cb.message.answer(
+        str(camp["text"]),
+        reply_markup=kb.as_markup(),
+        disable_web_page_preview=True,
+    )
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("preview:open:"))
-async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
-
-    raw_id = cb.data.split(":")[-1]
-    if not raw_id.isdigit():
-        await cb.answer("Некорректный id", show_alert=True)
-        return
-    campaign_id = int(raw_id)
-
-    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
-    if camp is None:
-        await cb.answer("Кампания не найдена", show_alert=True)
-        return
-
-    await cb.answer("Ок ✅")
-    await cb.message.answer(f"Ссылка: {camp['url']}")
-@router.callback_query(F.data.startswith("campaign:pay:stub:"))
-async def campaign_pay_stub(cb: CallbackQuery) -> None:
-    await cb.answer("Оплата будет на следующем этапе (Этап 3).", show_alert=True)
+async def preview_open(cb: CallbackQuery) -> None:
+    # Legacy: preview now uses URL-button, no callback needed
+    await cb.answer("Кнопка уже открывает ссылку ✅", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("campaign:pay:test:"))
@@ -419,3 +404,80 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
         "Воркер отправит сообщения в фоне."
     )
+
+@router.callback_query(F.data.startswith("shop:campaigns:"))
+async def shop_campaigns_menu(cb: CallbackQuery) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Создать рассылку", callback_data=f"shop:campaign:create:{shop_id}")
+    kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaign:list:{shop_id}")
+    kb.button(text="⬅️ Назад", callback_data=f"shop:open:{shop_id}")
+    kb.adjust(1)
+
+    await cb.message.edit_text("Рассылки магазина:", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("shop:campaign:create:"))
+async def shop_campaign_create_start(cb: CallbackQuery, state: FSMContext) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    await state.set_state(CampaignCreate.text)
+    await state.update_data(shop_id=shop_id)
+    await cb.message.edit_text("Введите текст рассылки:")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("shop:campaign:list:"))
+async def shop_campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    shop_id = int(raw_id)
+
+    campaigns = await list_seller_campaigns(pool, seller_tg_user_id=tg_id, limit=30)
+    campaigns = [c for c in campaigns if int(c.get("shop_id") or 0) == shop_id]
+
+    items: list[tuple[int, str]] = []
+    for c in campaigns[:10]:
+        status_h = _status_label(str(c.get("status", "")))
+        dt = c.get("created_at")
+        date_s = dt.date().isoformat() if dt else ""
+        items.append((c["id"], f"#{c['id']} {status_h} ({date_s})"))
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = InlineKeyboardBuilder()
+    for cid, title in items:
+        kb.button(text=title, callback_data=f"campaign:open:{cid}")
+    kb.button(text="⬅️ Назад", callback_data=f"shop:campaigns:{shop_id}")
+    kb.adjust(1)
+
+    await cb.message.edit_text("Рассылки магазина (последние 10):", reply_markup=kb.as_markup())
+    await cb.answer()
