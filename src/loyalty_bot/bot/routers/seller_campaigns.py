@@ -48,7 +48,7 @@ def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     return kb
 
 
-@router.callback_query(F.data.startswith("shop:campaigns:"))
+@router.callback_query(F.data.regexp(r"^shop:campaigns:\d+$"))
 async def shop_campaigns_menu(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
@@ -72,8 +72,8 @@ async def shop_campaigns_menu(cb: CallbackQuery, state: FSMContext, pool: asyncp
         return
 
     await state.clear()
-    await cb.message.answer(
-        f"📣 Рассылки магазина: <b>{html.escape(shop.get('name') or shop.get('shop_name') or '')}</b>",
+    await cb.message.edit_text(
+        f"📣 Рассылки магазина: {html.escape(shop.get('name') or shop.get('shop_name') or '')}",
         reply_markup=_shop_campaigns_menu_kb(shop_id).as_markup(),
     )
     await cb.answer()
@@ -125,7 +125,7 @@ async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncp
     await state.clear()
     items = await list_shop_campaigns(pool, seller_tg_user_id=tg_id, shop_id=shop_id, limit=10)
     if not items:
-        await cb.message.answer(
+        await cb.message.edit_text(
             "У вас пока нет рассылок для этого магазина.",
             reply_markup=_shop_campaigns_menu_kb(shop_id).as_markup(),
         )
@@ -138,8 +138,8 @@ async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncp
         kb.button(text=title, callback_data=f"campaign:open:{c['id']}")
     kb.button(text="⬅️ Назад", callback_data=f"shop:campaigns:{shop_id}")
     kb.adjust(1)
-    await cb.message.answer(
-        f"Ваши рассылки для <b>{html.escape(str(shop.get('name') or shop.get('shop_name') or 'магазина'))}</b> (последние 10):",
+    await cb.message.edit_text(
+        f"Ваши рассылки для {html.escape(str(shop.get('name') or shop.get('shop_name') or 'магазина'))} (последние 10):",
         reply_markup=kb.as_markup(),
     )
     await cb.answer()
