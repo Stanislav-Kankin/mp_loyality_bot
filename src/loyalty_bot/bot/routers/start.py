@@ -31,12 +31,13 @@ async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int)
         return
     text = (welcome.get("welcome_text") or "").strip()
     photo_file_id = welcome.get("welcome_photo_file_id")
+    welcome_button_text = (welcome.get("welcome_button_text") or "").strip()
     welcome_url = (welcome.get("welcome_url") or "").strip() or None
 
     kb = None
     if welcome_url:
         b = InlineKeyboardBuilder()
-        b.button(text="🔗 Ссылка", url=welcome_url)
+        b.button(text=(welcome_button_text or "🔗 Ссылка"), url=welcome_url)
         b.adjust(1)
         kb = b.as_markup()
 
