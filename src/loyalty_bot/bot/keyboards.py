@@ -37,17 +37,6 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
     return kb.as_markup()
 
 
-
-
-def shop_welcome_actions(shop_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="👁 Посмотреть как покупатель", callback_data=f"shopwelcome:preview:{shop_id}")
-    kb.button(text="✏️ Изменить", callback_data=f"shopwelcome:edit:{shop_id}")
-    kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
 def buyer_subscription_menu(shop_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔕 Отписаться", callback_data=f"buyer:unsub:{shop_id}")
@@ -100,15 +89,19 @@ def campaign_actions(
     return kb.as_markup()
 
 
-def cancel_kb(callback_data: str = "cancel") -> InlineKeyboardMarkup:
+def skip_photo_kb(prefix: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data=callback_data)
+    kb.button(text="⏭ Пропустить", callback_data=f"{prefix}:skip")
     kb.adjust(1)
     return kb.as_markup()
 
 
-def skip_photo_kb(prefix: str) -> InlineKeyboardMarkup:
+def cancel_kb(callback_data: str = "cancel") -> InlineKeyboardMarkup:
+    """Single cancel button for inline forms.
+
+    callback_data is customizable to route cancellation back to a specific screen.
+    """
     kb = InlineKeyboardBuilder()
-    kb.button(text="⏭ Пропустить", callback_data=f"{prefix}:skip")
+    kb.button(text="❌ Отмена", callback_data=callback_data)
     kb.adjust(1)
     return kb.as_markup()

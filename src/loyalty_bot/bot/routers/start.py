@@ -29,31 +29,27 @@ async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int)
     welcome = await get_shop_welcome(pool, shop_id=shop_id)
     if not welcome:
         return
-
     text = (welcome.get("welcome_text") or "").strip()
     photo_file_id = welcome.get("welcome_photo_file_id")
+    welcome_url = (welcome.get("welcome_url") or "").strip() or None
 
-    # Send welcome content (text/photo)
+    kb = None
+    if welcome_url:
+        b = InlineKeyboardBuilder()
+        b.button(text="🔗 Ссылка", url=welcome_url)
+        b.adjust(1)
+        kb = b.as_markup()
+
     if photo_file_id:
+        # Caption max is 1024
         caption = text[:1024] if text else None
-        await message.answer_photo(photo=photo_file_id, caption=caption)
+        await message.answer_photo(photo=photo_file_id, caption=caption, reply_markup=kb)
         if text and len(text) > 1024:
             await message.answer(text[1024:])
-    elif text:
-        await message.answer(text)
+        return
 
-    # Also send shop deep-link so the buyer can easily open/share it.
-    try:
-        bot_username = (await message.bot.get_me()).username
-    except Exception:
-        bot_username = None
-
-    if bot_username:
-        link = f"https://t.me/{bot_username}?start=shop_{shop_id}"
-        kb = InlineKeyboardBuilder()
-        kb.button(text="📎 Ссылка", url=link)
-        kb.adjust(1)
-        await message.answer(f"📎 Ссылка на магазин:\n{link}", reply_markup=kb.as_markup())
+    if text:
+        await message.answer(text, reply_markup=kb)
 
 
 

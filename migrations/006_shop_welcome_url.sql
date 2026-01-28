@@ -1,0 +1,2 @@
+ALTER TABLE shops
+    ADD COLUMN IF NOT EXISTS welcome_url TEXT;

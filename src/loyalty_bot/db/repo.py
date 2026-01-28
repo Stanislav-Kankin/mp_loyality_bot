@@ -324,6 +324,7 @@ async def update_shop_welcome(
     shop_id: int,
     welcome_text: str,
     welcome_photo_file_id: str | None,
+    welcome_url: str | None,
 ) -> None:
     async with pool.acquire() as conn:
         owned = await conn.fetchrow(
@@ -343,12 +344,14 @@ async def update_shop_welcome(
             """
             UPDATE shops
             SET welcome_text=$2,
-                welcome_photo_file_id=$3
+                welcome_photo_file_id=$3,
+                welcome_url=$4
             WHERE id=$1;
             """,
             shop_id,
             welcome_text,
             welcome_photo_file_id,
+            welcome_url,
         )
 
 
@@ -356,7 +359,7 @@ async def get_shop_welcome(pool: asyncpg.Pool, *, shop_id: int) -> dict | None:
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
             """
-            SELECT welcome_text, welcome_photo_file_id
+            SELECT welcome_text, welcome_photo_file_id, welcome_url
             FROM shops
             WHERE id=$1;
             """,
@@ -367,6 +370,7 @@ async def get_shop_welcome(pool: asyncpg.Pool, *, shop_id: int) -> dict | None:
         return {
             "welcome_text": str(r["welcome_text"] or ""),
             "welcome_photo_file_id": str(r["welcome_photo_file_id"] or "") or None,
+            "welcome_url": str(r["welcome_url"] or "") or None,
         }
 
 
@@ -519,7 +523,6 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
             "text": str(r["text"]),
             "button_title": str(r["button_title"]) if r["button_title"] is not None else "",
             "url": str(r["url"]) if r["url"] is not None else "",
-            "photo_file_id": str(r["photo_file_id"]) if r["photo_file_id"] is not None else None,
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
         }
