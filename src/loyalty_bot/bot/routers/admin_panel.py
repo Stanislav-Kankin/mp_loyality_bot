@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncpg
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -29,6 +30,21 @@ def _is_admin(tg_id: int) -> bool:
     return tg_id in settings.admin_ids_set
 
 
+async def _safe_edit(cb: CallbackQuery, text: str, reply_markup) -> None:
+    """Edit message text safely.
+
+    Telegram returns 'message is not modified' if text/markup are unchanged.
+    We silently ignore that case to avoid crashing on repeated button clicks.
+    """
+    if not cb.message:
+        return
+    try:
+        await cb.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+
 def _admin_sellers_list_kb(*, page: int, items: list[dict], has_next: bool) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for it in items:
@@ -39,7 +55,7 @@ def _admin_sellers_list_kb(*, page: int, items: list[dict], has_next: bool) -> I
         campaigns_count = int(it["campaigns_count"])
         prefix = "✅" if active else "⛔️"
         kb.button(
-            text=f"{prefix} {tg_user_id} — {credits}кр — 🏪{shops_count} — 📣{campaigns_count}",
+            text=f"{prefix} {tg_user_id} · кредиты {credits} · 🏪{shops_count} · 📣{campaigns_count}",
             callback_data=f"admin:seller:open:{tg_user_id}:{page}",
         )
 
@@ -87,8 +103,7 @@ async def admin_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"Суммарный баланс кредитов: {stats['credits_total']}\n"
     )
 
-    if cb.message:
-        await cb.message.edit_text(text, reply_markup=admin_main_menu())
+    await _safe_edit(cb, text, reply_markup=admin_main_menu())
     await cb.answer()
 
 
@@ -112,8 +127,7 @@ async def admin_sellers_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     kb = _admin_sellers_list_kb(page=page, items=items, has_next=has_next).as_markup()
 
-    if cb.message:
-        await cb.message.edit_text(text, reply_markup=kb)
+    await _safe_edit(cb, text, reply_markup=kb)
     await cb.answer()
 
 
@@ -160,8 +174,7 @@ async def admin_seller_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     kb = _admin_seller_details_kb(tg_user_id=tg_user_id, is_active=active, back_page=back_page).as_markup()
 
-    if cb.message:
-        await cb.message.edit_text(text, reply_markup=kb)
+    await _safe_edit(cb, text, reply_markup=kb)
     await cb.answer()
 
 
@@ -214,8 +227,7 @@ async def admin_seller_toggle(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         text += f"Заметка: {d['note']}\n"
 
     kb = _admin_seller_details_kb(tg_user_id=tg_user_id, is_active=active, back_page=back_page).as_markup()
-    if cb.message:
-        await cb.message.edit_text(text, reply_markup=kb)
+    await _safe_edit(cb, text, reply_markup=kb)
 
     await cb.answer("Обновлено ✅", show_alert=True)
 
@@ -231,7 +243,7 @@ async def admin_seller_add_start(cb: CallbackQuery, state: FSMContext) -> None:
 
     await cb.message.answer(
         "Введите Telegram ID селлера (число).\n\n"
-        "Подсказка: селлер может прислать вам свой ID через @userinfobot.",
+        "Подсказка: селлер может прислать вам свой ID через @FIND_MY_ID_BOT.",
         reply_markup=cancel_kb("admin:home"),
     )
     await cb.answer()
@@ -287,3 +299,4 @@ async def admin_seller_add_finish(message: Message, state: FSMContext, pool: asy
 
     kb = _admin_seller_details_kb(tg_user_id=tg_user_id, is_active=active, back_page=0).as_markup()
     await message.answer(text, reply_markup=kb)
+

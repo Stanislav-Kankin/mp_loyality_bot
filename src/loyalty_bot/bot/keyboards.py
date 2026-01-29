@@ -9,7 +9,6 @@ def seller_main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     kb.button(text="🏪 Магазины", callback_data="seller:shops")
     kb.button(text="📣 Рассылки", callback_data="seller:campaigns")
     kb.button(text="💰 Купить рассылки", callback_data="credits:menu")
-    kb.button(text="🧾 Заказы", callback_data="seller:orders:stub")
     if is_admin:
         kb.button(text="🛠 Админка", callback_data="admin:home")
         kb.adjust(1, 2, 2)
