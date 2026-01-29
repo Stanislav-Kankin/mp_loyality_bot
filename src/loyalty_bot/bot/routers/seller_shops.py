@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import cancel_kb, seller_main_menu, shops_menu, shop_actions, skip_photo_kb
+from loyalty_bot.bot.keyboards import cancel_kb, cancel_skip_kb, seller_main_menu, shops_menu, shop_actions, skip_photo_kb
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
 from loyalty_bot.db.repo import (
     create_shop,
@@ -412,16 +412,115 @@ async def shop_welcome_edit_start(cb: CallbackQuery, state: FSMContext, pool: as
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
+    # Prefill current values so that "Пропустить" keeps them.
+    welcome = await get_shop_welcome(pool, shop_id=shop_id)
+    cur_text = (welcome.get("welcome_text") if welcome else "") or ""
+    cur_photo_file_id = welcome.get("welcome_photo_file_id") if welcome else None
+    cur_button_text = (welcome.get("welcome_button_text") if welcome else "") or ""
+    cur_url = (welcome.get("welcome_url") if welcome else "") or ""
+
     await state.clear()
-    await state.update_data(shop_id=shop_id)
+    await state.update_data(
+        shop_id=shop_id,
+        cur_welcome_text=cur_text,
+        cur_welcome_photo_file_id=cur_photo_file_id,
+        cur_welcome_button_text=cur_button_text,
+        cur_welcome_url=cur_url,
+    )
     await state.set_state(ShopWelcome.text)
 
     await cb.message.answer(
-        "Введите welcome-текст для покупателей.\n\n"
-        "Например: какие бонусы получит клиент (промокод, скидка, подарки и т.д.).",
-        reply_markup=cancel_kb(f"shopwelcome:cancel:{shop_id}"),
+        """Введите welcome-текст для покупателей.
+
+⏭ «Пропустить» — оставить текущий текст.
+
+Например: какие бонусы получит клиент (промокод, скидка, подарки и т.д.).""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:text",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
     )
     await cb.answer()
+
+
+async def _shop_welcome_finish_update(*, message: Message, pool: asyncpg.Pool, tg_id: int, state: FSMContext) -> None:
+    data = await state.get_data()
+    shop_id = data.get("shop_id")
+
+    welcome_text = (data.get("welcome_text") or "").strip()
+    photo_file_id = data.get("welcome_photo_file_id")
+    button_text = (data.get("welcome_button_text") or "").strip()
+    url = (data.get("welcome_url") or "").strip()
+
+    if not isinstance(shop_id, int):
+        await state.clear()
+        await message.answer("Ошибка состояния. Попробуйте ещё раз.")
+        return
+
+    if not welcome_text:
+        await message.answer(
+            "Welcome-текст пустой. Введите текст (или сначала задайте его, затем можно пропускать шаги)."
+        )
+        return
+    if not button_text:
+        await message.answer(
+            "Текст кнопки пустой. Введите текст кнопки (или сначала задайте его, затем можно пропускать шаги)."
+        )
+        return
+    if not _is_http_url(url):
+        await message.answer("Ссылка пустая или некорректная. Введите URL, который начинается с http:// или https://")
+        return
+
+    await update_shop_welcome(
+        pool,
+        seller_tg_user_id=tg_id,
+        shop_id=shop_id,
+        welcome_text=welcome_text,
+        welcome_photo_file_id=str(photo_file_id) if photo_file_id else None,
+        welcome_button_text=button_text or None,
+        welcome_url=url,
+    )
+
+    await state.clear()
+    await message.answer("Welcome-сообщение обновлено ✅")
+
+
+@router.callback_query(F.data == "shopwelcome:skip:text")
+async def shop_welcome_skip_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    shop_id = data.get("shop_id")
+    cur_text = (data.get("cur_welcome_text") or "").strip()
+
+    if not isinstance(shop_id, int):
+        await state.clear()
+        await cb.message.answer("Ошибка состояния. Попробуйте ещё раз.")
+        await cb.answer()
+        return
+
+    if not cur_text:
+        await cb.message.answer("Текущий welcome-текст пустой. Введите текст, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(welcome_text=cur_text)
+    await state.set_state(ShopWelcome.photo)
+
+    await cb.message.answer(
+        """Пришлите картинку для welcome-сообщения или нажмите «Пропустить».
+
+⏭ «Пропустить» — оставить текущее фото.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:photo",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
+    )
+    await cb.answer()
+
 
 @router.message(ShopWelcome.text)
 async def shop_welcome_text(message: Message, state: FSMContext) -> None:
@@ -434,23 +533,20 @@ async def shop_welcome_text(message: Message, state: FSMContext) -> None:
     await state.set_state(ShopWelcome.photo)
     data = await state.get_data()
     shop_id = data.get("shop_id")
-    markup = skip_photo_kb("shopwelcome")
-    if isinstance(shop_id, int):
-        from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-        b = InlineKeyboardBuilder.from_markup(markup)
-        b.button(text="❌ Отмена", callback_data=f"shopwelcome:cancel:{shop_id}")
-        b.adjust(1)
-        markup = b.as_markup()
 
     await _safe_answer(
         message,
-        "Пришлите картинку для welcome-сообщения или нажмите «Пропустить».",
-        reply_markup=markup,
+        """Пришлите картинку для welcome-сообщения или нажмите «Пропустить».
+
+⏭ «Пропустить» — оставить текущее фото.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:photo",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}" if isinstance(shop_id, int) else "shopwelcome:cancel:0",
+        ),
     )
 
 
-@router.callback_query(F.data == "shopwelcome:skip")
+@router.callback_query(F.data == "shopwelcome:skip:photo")
 async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
@@ -460,6 +556,7 @@ async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: as
     data = await state.get_data()
     shop_id = data.get("shop_id")
     welcome_text = data.get("welcome_text")
+    cur_photo = data.get("cur_welcome_photo_file_id")
 
     if not isinstance(shop_id, int) or not isinstance(welcome_text, str):
         await state.clear()
@@ -467,12 +564,20 @@ async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: as
         await cb.answer()
         return
 
-    await state.update_data(welcome_photo_file_id=None)
+    # In edit flow: 'Skip' keeps current photo (may be None).
+    await state.update_data(welcome_photo_file_id=cur_photo if cur_photo else None)
     await state.set_state(ShopWelcome.button_text)
+
     await cb.message.answer(
-        "Введите текст кнопки, которую увидит покупатель (как в рассылке).\n\n"
-        "Например: Открыть магазин / Получить скидку / Перейти на сайт",
-        reply_markup=cancel_kb(f"shopwelcome:cancel:{shop_id}"),
+        """Введите текст кнопки, которую увидит покупатель (как в рассылке).
+
+⏭ «Пропустить» — оставить текущее значение.
+
+Например: Открыть магазин / Получить скидку / Перейти на сайт""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:button_text",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
     )
     await cb.answer()
 
@@ -492,17 +597,69 @@ async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.
         return
 
     if not message.photo:
-        await message.answer("Пришлите картинку (как фото) или нажмите «Пропустить».")
+        await message.answer(
+            "Пришлите картинку (как фото) или нажмите «Пропустить».",
+            reply_markup=cancel_skip_kb(
+                skip_cb="shopwelcome:skip:photo",
+                cancel_cb=f"shopwelcome:cancel:{shop_id}",
+            ),
+        )
         return
 
     photo_file_id = message.photo[-1].file_id
     await state.update_data(welcome_photo_file_id=photo_file_id)
     await state.set_state(ShopWelcome.button_text)
+
     await message.answer(
-        "Введите текст кнопки, которую увидит покупатель (как в рассылке).\n\n"
-        "Например: Открыть магазин / Получить скидку / Перейти на сайт",
-        reply_markup=cancel_kb(f"shopwelcome:cancel:{shop_id}"),
+        """Введите текст кнопки, которую увидит покупатель (как в рассылке).
+
+⏭ «Пропустить» — оставить текущее значение.
+
+Например: Открыть магазин / Получить скидку / Перейти на сайт""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:button_text",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
     )
+
+
+@router.callback_query(F.data == "shopwelcome:skip:button_text")
+async def shop_welcome_skip_button_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    shop_id = data.get("shop_id")
+    cur_btn = (data.get("cur_welcome_button_text") or "").strip()
+
+    if not isinstance(shop_id, int):
+        await state.clear()
+        await cb.message.answer("Ошибка состояния. Попробуйте ещё раз.")
+        await cb.answer()
+        return
+
+    if not cur_btn:
+        await cb.message.answer("Текущий текст кнопки пустой. Введите текст кнопки, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(welcome_button_text=cur_btn)
+    await state.set_state(ShopWelcome.url)
+
+    await cb.message.answer(
+        """Введите ссылку (URL), которую получит покупатель кнопкой.
+
+⏭ «Пропустить» — оставить текущую ссылку.
+
+Формат: https://...""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:url",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
+    )
+    await cb.answer()
 
 
 @router.message(ShopWelcome.button_text)
@@ -529,10 +686,44 @@ async def shop_welcome_button_text(message: Message, state: FSMContext, pool: as
     await state.update_data(welcome_button_text=btn)
     await state.set_state(ShopWelcome.url)
     await message.answer(
-        f"Введите ссылку (URL), которую получит покупатель кнопкой «{btn}».\n\n"
-        "Формат: https://...",
-        reply_markup=cancel_kb(f"shopwelcome:cancel:{shop_id}"),
+        f"""Введите ссылку (URL), которую получит покупатель кнопкой «{btn}».
+
+⏭ «Пропустить» — оставить текущую ссылку.
+
+Формат: https://...""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="shopwelcome:skip:url",
+            cancel_cb=f"shopwelcome:cancel:{shop_id}",
+        ),
     )
+
+
+@router.callback_query(F.data == "shopwelcome:skip:url")
+async def shop_welcome_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    shop_id = data.get("shop_id")
+    cur_url = (data.get("cur_welcome_url") or "").strip()
+
+    if not isinstance(shop_id, int):
+        await state.clear()
+        await cb.message.answer("Ошибка состояния. Попробуйте ещё раз.")
+        await cb.answer()
+        return
+
+    if not _is_http_url(cur_url):
+        await cb.message.answer("Текущая ссылка пустая или некорректная. Введите URL, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(welcome_url=cur_url)
+    # Finalize
+    await _shop_welcome_finish_update(message=cb.message, pool=pool, tg_id=tg_id, state=state)
+    await cb.answer()
 
 
 @router.message(ShopWelcome.url)
@@ -546,28 +737,8 @@ async def shop_welcome_url(message: Message, state: FSMContext, pool: asyncpg.Po
         await message.answer("Некорректная ссылка. Введите URL, который начинается с http:// или https://")
         return
 
-    data = await state.get_data()
-    shop_id = data.get("shop_id")
-    welcome_text = data.get("welcome_text")
-    photo_file_id = data.get("welcome_photo_file_id")
-    welcome_button_text = (data.get("welcome_button_text") or "").strip()
-
-    if not isinstance(shop_id, int) or not isinstance(welcome_text, str):
-        await state.clear()
-        await message.answer("Ошибка состояния. Попробуйте ещё раз.")
-        return
-
-    await update_shop_welcome(
-        pool,
-        seller_tg_user_id=tg_id,
-        shop_id=shop_id,
-        welcome_text=welcome_text,
-        welcome_photo_file_id=str(photo_file_id) if photo_file_id else None,
-        welcome_button_text=welcome_button_text or None,
-        welcome_url=url,
-    )
-    await state.clear()
-    await message.answer("Welcome-сообщение обновлено ✅")
+    await state.update_data(welcome_url=url)
+    await _shop_welcome_finish_update(message=message, pool=pool, tg_id=tg_id, state=state)
 
 
 @router.callback_query(F.data.startswith("shopwelcome:cancel:"))

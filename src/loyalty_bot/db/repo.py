@@ -475,6 +475,68 @@ async def create_campaign_draft(
         return int(camp["id"])
 
 
+
+
+async def update_campaign_draft(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    campaign_id: int,
+    text: str | None = None,
+    button_title: str | None = None,
+    url: str | None = None,
+    photo_file_id: str | None = None,
+) -> None:
+    """Update draft campaign fields.
+
+    Only campaigns with status='draft' can be edited in MVP.
+    """
+
+    fields: list[str] = []
+    args: list[object] = []
+    idx = 1
+
+    if text is not None:
+        fields.append(f"text=${idx}")
+        args.append(text)
+        idx += 1
+    if button_title is not None:
+        fields.append(f"button_title=${idx}")
+        args.append(button_title)
+        idx += 1
+    if url is not None:
+        fields.append(f"url=${idx}")
+        args.append(url)
+        idx += 1
+    # photo_file_id may be set to None explicitly
+    if photo_file_id is not None:
+        fields.append(f"photo_file_id=${idx}")
+        args.append(photo_file_id)
+        idx += 1
+
+    if not fields:
+        return
+
+    args.extend([seller_tg_user_id, campaign_id])
+
+    async with pool.acquire() as conn:
+        # Ensure seller owns campaign AND it is editable.
+        row = await conn.fetchrow(
+            f"""
+            UPDATE campaigns c
+            SET {', '.join(fields)}
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE c.shop_id = sh.id
+              AND s.tg_user_id=${idx}
+              AND c.id=${idx + 1}
+              AND c.status='draft'
+            RETURNING c.id;
+            """,
+            *args,
+        )
+        if row is None:
+            raise ValueError('campaign_not_editable')
 async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, limit: int = 10) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(

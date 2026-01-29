@@ -10,11 +10,12 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, skip_photo_kb
+from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
 from loyalty_bot.db.repo import (
     start_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
+    update_campaign_draft,
     get_campaign_for_seller,
     list_seller_campaigns,
     list_shop_campaigns,
@@ -38,6 +39,285 @@ def _status_label(status: str) -> str:
     }.get(s, status)
 
 router = Router()
+
+
+
+def _is_edit_flow(data: dict) -> bool:
+    return isinstance(data.get("campaign_id"), int)
+
+
+def _build_campaign_actions_markup(*, campaign_id: int, status: str, tg_id: int) -> InlineKeyboardMarkup:
+    """Base actions + optional edit button for draft."""
+    markup = campaign_actions(
+        campaign_id,
+        show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
+        show_send=(str(status) == "paid"),
+    )
+    if str(status) == "draft":
+        b = InlineKeyboardBuilder.from_markup(markup)
+        b.button(text="✏️ Изменить", callback_data=f"campaign:edit:{campaign_id}")
+        b.adjust(1)
+        return b.as_markup()
+    return markup
+
+
+def _campaign_card_text(camp: dict) -> str:
+    preview = str(camp.get("text") or "")
+    if len(preview) > 350:
+        preview = preview[:350] + "…"
+
+    return (
+        f"Рассылка №{camp['id']}\n"
+        f"<b>Статус:</b> {_status_label(str(camp.get('status') or ''))}\n"
+        f"<b>Магазин:</b> {html.escape(str(camp.get('shop_name','')))}\n"
+        f"<b>Создана:</b> {_format_dt(camp.get('created_at'))}\n\n"
+        f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
+        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}\n"
+        f"<b>URL:</b> {html.escape(str(camp.get('url') or ''))}\n"
+        f"<b>Цена:</b> {_format_price(int(camp.get('price_minor') or 0), str(camp.get('currency') or ''))}"
+    )
+
+
+async def _render_campaign_card(*, message: Message, camp: dict, tg_id: int) -> None:
+    await message.edit_text(
+        _campaign_card_text(camp),
+        reply_markup=_build_campaign_actions_markup(campaign_id=int(camp['id']), status=str(camp.get('status') or ''), tg_id=tg_id),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data == "campaigncreate:cancel")
+async def campaign_create_cancel(cb: CallbackQuery, state: FSMContext) -> None:
+    # Return to seller campaigns menu (simple & stable).
+    await state.clear()
+    await cb.message.edit_text("Рассылки:", reply_markup=campaigns_menu())
+    await cb.answer("Отменено")
+
+
+@router.callback_query(F.data.startswith("campaignedit:cancel:"))
+async def campaign_edit_cancel(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await state.clear()
+        await cb.answer()
+        return
+    campaign_id = int(raw_id)
+
+    await state.clear()
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    if camp is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    # Re-render card in-place
+    await cb.message.edit_text(
+        _campaign_card_text(camp),
+        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, status=str(camp.get('status') or ''), tg_id=tg_id),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    await cb.answer("Отменено")
+
+
+@router.callback_query(F.data.startswith("campaign:edit:"))
+async def campaign_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    campaign_id = int(raw_id)
+
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    if camp is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    if str(camp.get("status")) != "draft":
+        await cb.answer("Можно редактировать только черновики", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(
+        campaign_id=campaign_id,
+        shop_id=int(camp.get("shop_id")),
+        cur_text=str(camp.get("text") or ""),
+        cur_photo_file_id=camp.get("photo_file_id"),
+        cur_button_title=str(camp.get("button_title") or ""),
+        cur_url=str(camp.get("url") or ""),
+    )
+    await state.set_state(CampaignCreate.text)
+
+    await cb.message.answer(
+        """✏️ Редактирование рассылки
+
+Введите новый текст рассылки.
+
+⏭ «Пропустить» — оставить текущий текст.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="campaignedit:skip:text",
+            cancel_cb=f"campaignedit:cancel:{campaign_id}",
+        ),
+    )
+    await cb.answer()
+
+
+async def _campaign_finish_edit(message: Message, state: FSMContext, pool: asyncpg.Pool, tg_id: int) -> None:
+    data = await state.get_data()
+    campaign_id = data.get("campaign_id")
+    if not isinstance(campaign_id, int):
+        await state.clear()
+        await message.answer("Ошибка состояния. Попробуйте ещё раз.")
+        return
+
+    text_val = (data.get("text") or data.get("cur_text") or "").strip()
+    button_title = (data.get("button_title") or data.get("cur_button_title") or "").strip()
+    url_val = (data.get("url") or data.get("cur_url") or "").strip()
+    photo_file_id = data.get("photo_file_id")
+    if photo_file_id is None:
+        photo_file_id = data.get("cur_photo_file_id")
+
+    if not text_val:
+        await message.answer("Текст пустой. Введите текст (или сначала задайте его, затем можно пропускать шаги).")
+        return
+    if not button_title:
+        await message.answer("Название кнопки пустое. Введите название (или сначала задайте его, затем можно пропускать шаги).")
+        return
+    if not _is_valid_url(url_val):
+        await message.answer("URL пустой или некорректный. Введите URL (http/https).")
+        return
+
+    await update_campaign_draft(
+        pool,
+        seller_tg_user_id=tg_id,
+        campaign_id=campaign_id,
+        text=text_val,
+        button_title=button_title,
+        url=url_val,
+        photo_file_id=str(photo_file_id) if photo_file_id else None,
+    )
+
+    await state.clear()
+    await message.answer("Черновик рассылки обновлён ✅")
+
+
+@router.callback_query(F.data == "campaignedit:skip:text")
+async def campaignedit_skip_text(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    cur_text = (data.get("cur_text") or "").strip()
+    campaign_id = data.get("campaign_id")
+
+    if not isinstance(campaign_id, int):
+        await state.clear()
+        await cb.answer()
+        return
+    if not cur_text:
+        await cb.message.answer("Текущий текст пустой. Введите текст, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(text=cur_text)
+    await state.set_state(CampaignCreate.photo)
+
+    await cb.message.answer(
+        """Пришлите картинку для рассылки.
+
+⏭ «Пропустить» — оставить текущее фото.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="campaignedit:skip:photo",
+            cancel_cb=f"campaignedit:cancel:{campaign_id}",
+        ),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "campaignedit:skip:photo")
+async def campaignedit_skip_photo(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    campaign_id = data.get("campaign_id")
+    if not isinstance(campaign_id, int):
+        await state.clear()
+        await cb.answer()
+        return
+
+    await state.update_data(photo_file_id=data.get("cur_photo_file_id"))
+    await state.set_state(CampaignCreate.button_title)
+
+    await cb.message.answer(
+        """Введите название кнопки.
+
+⏭ «Пропустить» — оставить текущее значение.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="campaignedit:skip:button_title",
+            cancel_cb=f"campaignedit:cancel:{campaign_id}",
+        ),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "campaignedit:skip:button_title")
+async def campaignedit_skip_button_title(cb: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    campaign_id = data.get("campaign_id")
+    cur_title = (data.get("cur_button_title") or "").strip()
+
+    if not isinstance(campaign_id, int):
+        await state.clear()
+        await cb.answer()
+        return
+    if not cur_title:
+        await cb.message.answer("Текущее название кнопки пустое. Введите название, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(button_title=cur_title)
+    await state.set_state(CampaignCreate.url)
+
+    await cb.message.answer(
+        """Введите URL (http/https).
+
+⏭ «Пропустить» — оставить текущий URL.""",
+        reply_markup=cancel_skip_kb(
+            skip_cb="campaignedit:skip:url",
+            cancel_cb=f"campaignedit:cancel:{campaign_id}",
+        ),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "campaignedit:skip:url")
+async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    campaign_id = data.get("campaign_id")
+    cur_url = (data.get("cur_url") or "").strip()
+
+    if not isinstance(campaign_id, int):
+        await state.clear()
+        await cb.answer()
+        return
+    if not _is_valid_url(cur_url):
+        await cb.message.answer("Текущий URL пустой/некорректный. Введите URL, чтобы продолжить.")
+        await cb.answer()
+        return
+
+    await state.update_data(url=cur_url)
+    await _campaign_finish_edit(cb.message, state, pool, tg_id)
+    await cb.answer()
 
 def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
@@ -100,7 +380,7 @@ async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg
     await state.clear()
     await state.update_data(shop_id=shop_id)
     await state.set_state(CampaignCreate.text)
-    await cb.message.answer("Введите текст рассылки:")
+    await cb.message.answer("Введите текст рассылки:", reply_markup=cancel_kb("campaigncreate:cancel"))
     await cb.answer()
 
 
@@ -256,7 +536,7 @@ async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CampaignCreate.text)
     await state.update_data(shop_id=shop_id)
 
-    await cb.message.edit_text("Введите текст рассылки (сообщение, которое увидят покупатели):")
+    await cb.message.edit_text("Введите текст рассылки (сообщение, которое увидят покупатели):", reply_markup=cancel_kb("campaigncreate:cancel"))
     await cb.answer()
 
 
@@ -267,36 +547,84 @@ async def campaigns_text(message: Message, state: FSMContext) -> None:
         await message.answer("Нет доступа.")
         return
 
-    text = (message.text or "").strip()
-    if len(text) < 1 or len(text) > 3500:
-        await message.answer("Текст должен быть от 1 до 3500 символов. Введите ещё раз:")
+    data = await state.get_data()
+    is_edit = _is_edit_flow(data)
+    cancel_cb = f"campaignedit:cancel:{data.get('campaign_id')}" if is_edit else "campaigncreate:cancel"
+
+    text_val = (message.text or "").strip()
+    if len(text_val) < 1 or len(text_val) > 3500:
+        await message.answer("Текст должен быть от 1 до 3500 символов. Введите ещё раз:", reply_markup=cancel_kb(cancel_cb))
         return
 
-    await state.update_data(text=text)
+    await state.update_data(text=text_val)
     await state.set_state(CampaignCreate.photo)
-    await message.answer(
-        "Пришлите картинку для рассылки или нажмите «Пропустить».",
-        reply_markup=skip_photo_kb("campaignphoto"),
-    )
+
+    if is_edit:
+        await message.answer(
+            """Пришлите картинку для рассылки.
+
+⏭ «Пропустить» — оставить текущее фото.""",
+            reply_markup=cancel_skip_kb(
+                skip_cb="campaignedit:skip:photo",
+                cancel_cb=cancel_cb,
+            ),
+        )
+    else:
+        await message.answer(
+            "Пришлите картинку для рассылки или нажмите «Пропустить».",
+            reply_markup=cancel_skip_kb(
+                skip_cb="campaignphoto:skip",
+                cancel_cb=cancel_cb,
+            ),
+        )
 
 
 @router.callback_query(F.data == "campaignphoto:skip")
 async def campaigns_create_photo_skip(cb: CallbackQuery, state: FSMContext) -> None:
+    # Create-flow only (edit flow has its own skip handlers).
+    data = await state.get_data()
+    if _is_edit_flow(data):
+        await cb.answer()
+        return
+
     await state.update_data(photo_file_id=None)
     await state.set_state(CampaignCreate.button_title)
-    await cb.message.answer("Введите название кнопки:")
+    await cb.message.answer("Введите название кнопки:", reply_markup=cancel_kb("campaigncreate:cancel"))
     await cb.answer()
 
 
 @router.message(CampaignCreate.photo)
 async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    is_edit = _is_edit_flow(data)
+    cancel_cb = f"campaignedit:cancel:{data.get('campaign_id')}" if is_edit else "campaigncreate:cancel"
+
     if not message.photo:
-        await message.answer("Пришлите картинку (как фото) или нажмите «Пропустить».")
+        if is_edit:
+            await message.answer(
+                "Пришлите картинку (как фото) или нажмите «Пропустить».",
+                reply_markup=cancel_skip_kb(skip_cb="campaignedit:skip:photo", cancel_cb=cancel_cb),
+            )
+        else:
+            await message.answer(
+                "Пришлите картинку (как фото) или нажмите «Пропустить».",
+                reply_markup=cancel_skip_kb(skip_cb="campaignphoto:skip", cancel_cb=cancel_cb),
+            )
         return
+
     photo_file_id = message.photo[-1].file_id
     await state.update_data(photo_file_id=photo_file_id)
     await state.set_state(CampaignCreate.button_title)
-    await message.answer("Введите название кнопки:")
+
+    if is_edit:
+        await message.answer(
+            """Введите название кнопки.
+
+⏭ «Пропустить» — оставить текущее значение.""",
+            reply_markup=cancel_skip_kb(skip_cb="campaignedit:skip:button_title", cancel_cb=cancel_cb),
+        )
+    else:
+        await message.answer("Введите название кнопки:", reply_markup=cancel_kb(cancel_cb))
 
 
 @router.message(CampaignCreate.button_title)
@@ -306,14 +634,30 @@ async def campaigns_button_title(message: Message, state: FSMContext) -> None:
         await message.answer("Нет доступа.")
         return
 
+    data = await state.get_data()
+    is_edit = _is_edit_flow(data)
+    cancel_cb = f"campaignedit:cancel:{data.get('campaign_id')}" if is_edit else "campaigncreate:cancel"
+
     title = (message.text or "").strip()
     if len(title) < 1 or len(title) > 64:
-        await message.answer("Название кнопки должно быть 1..64 символа. Введите ещё раз:")
+        await message.answer("Название кнопки должно быть 1..64 символа. Введите ещё раз:", reply_markup=cancel_kb(cancel_cb))
         return
 
     await state.update_data(button_title=title)
     await state.set_state(CampaignCreate.url)
-    await message.answer("Введите URL (http/https), который будет отправлен после нажатия кнопки:")
+
+    if is_edit:
+        await message.answer(
+            """Введите URL (http/https).
+
+⏭ «Пропустить» — оставить текущий URL.""",
+            reply_markup=cancel_skip_kb(skip_cb="campaignedit:skip:url", cancel_cb=cancel_cb),
+        )
+    else:
+        await message.answer(
+            "Введите URL (http/https), который будет отправлен после нажатия кнопки:",
+            reply_markup=cancel_kb(cancel_cb),
+        )
 
 
 @router.message(CampaignCreate.url)
@@ -323,18 +667,27 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         await message.answer("Нет доступа.")
         return
 
+    data = await state.get_data()
+    is_edit = _is_edit_flow(data)
+    cancel_cb = f"campaignedit:cancel:{data.get('campaign_id')}" if is_edit else "campaigncreate:cancel"
+
     url = (message.text or "").strip()
     if not _is_valid_url(url):
-        await message.answer("Некорректный URL. Нужен http/https. Введите ещё раз:")
+        await message.answer("Некорректный URL. Нужен http/https. Введите ещё раз:", reply_markup=cancel_kb(cancel_cb))
         return
 
-    data = await state.get_data()
+    await state.update_data(url=url)
+
+    if is_edit:
+        await _campaign_finish_edit(message, state, pool, tg_id)
+        return
+
     shop_id = data.get("shop_id")
-    text = data.get("text")
+    text_val = data.get("text")
     button_title = data.get("button_title")
     photo_file_id = data.get("photo_file_id")
 
-    if not isinstance(shop_id, int) or not isinstance(text, str) or not isinstance(button_title, str):
+    if not isinstance(shop_id, int) or not isinstance(text_val, str) or not isinstance(button_title, str):
         await state.clear()
         await message.answer("Ошибка состояния. Начните заново через 📣 Рассылки.")
         return
@@ -343,7 +696,7 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         pool,
         seller_tg_user_id=tg_id,
         shop_id=shop_id,
-        text=text,
+        text=text_val,
         button_title=button_title,
         url=url,
         photo_file_id=str(photo_file_id) if photo_file_id else None,
@@ -355,7 +708,7 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
     await message.answer(
         "Черновик рассылки создан ✅\n\n"
         f"ID кампании: {campaign_id}\n"
-        f"Текст: {text[:200]}{'…' if len(text) > 200 else ''}\n"
+        f"Текст: {text_val[:200]}{'…' if len(text_val) > 200 else ''}\n"
         f"Кнопка: {button_title}\n"
         f"URL: {url}\n\n"
         f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}\n"
@@ -366,7 +719,6 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
             show_send=False,
         ),
     )
-
 
 @router.callback_query(F.data == "campaigns:list")
 async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
@@ -417,23 +769,25 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if len(preview) > 350:
         preview = preview[:350] + "…"
 
-    await cb.message.edit_text(
-    f"Рассылка №{camp['id']}\n"
-    f"<b>Статус:</b> {_status_label(camp['status'])}\n"
-    f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
-    f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
-    f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
-    f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
-    f"<b>URL:</b> {html.escape(camp['url'])}\n"
-    f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
-    reply_markup=campaign_actions(
+    markup = _build_campaign_actions_markup(
         campaign_id,
-        show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
-        show_send=(str(camp.get('status')) == 'paid'),
-    ),
-    parse_mode="HTML",
-    disable_web_page_preview=True,
-)
+        status=str(camp.get("status") or ""),
+        tg_id=tg_id,
+    )
+
+    await cb.message.edit_text(
+        f"Рассылка №{camp['id']}\n"
+        f"<b>Статус:</b> {_status_label(camp['status'])}\n"
+        f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
+        f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
+        f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
+        f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
+        f"<b>URL:</b> {html.escape(camp['url'])}\n"
+        f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
+        reply_markup=markup,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
     await cb.answer()
 
 

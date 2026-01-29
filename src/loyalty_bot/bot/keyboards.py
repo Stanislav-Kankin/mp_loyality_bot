@@ -105,3 +105,15 @@ def cancel_kb(callback_data: str = "cancel") -> InlineKeyboardMarkup:
     kb.button(text="❌ Отмена", callback_data=callback_data)
     kb.adjust(1)
     return kb.as_markup()
+
+
+def cancel_skip_kb(*, skip_cb: str, cancel_cb: str, skip_text: str = '⏭ Пропустить') -> InlineKeyboardMarkup:
+    """Inline keyboard with Skip + Cancel.
+
+    Used in edit flows where 'Skip' means 'keep current value'.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text=skip_text, callback_data=skip_cb)
+    kb.button(text='❌ Отмена', callback_data=cancel_cb)
+    kb.adjust(1)
+    return kb.as_markup()
