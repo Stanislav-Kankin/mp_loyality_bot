@@ -10,9 +10,18 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import cancel_kb, cancel_skip_kb, seller_main_menu, shops_menu, shop_actions, skip_photo_kb
+from loyalty_bot.bot.keyboards import (
+    cancel_kb,
+    cancel_skip_kb,
+    credits_packages_menu,
+    seller_main_menu,
+    shops_menu,
+    shop_actions,
+    skip_photo_kb,
+)
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
 from loyalty_bot.db.repo import (
+    add_seller_credits,
     create_shop,
     ensure_seller,
     get_seller_credits,
@@ -87,6 +96,50 @@ async def seller_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     await ensure_seller(pool, tg_id)
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     await cb.message.edit_text(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "credits:menu")
+async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    await ensure_seller(pool, tg_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+
+    text = (
+        "💰 Покупка рассылок\n"
+        f"Текущий баланс: {credits}\n\n"
+        "Пока это тест-режим. Реальные оплаты пакетов добавим позже.\n"
+        "Для проверки можно нажать тестовую покупку."
+    )
+    await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb="seller:home"))
+    await cb.answer()
+
+
+@router.callback_query(F.data.in_({"credits:pkg:1", "credits:pkg:3", "credits:pkg:10"}))
+async def credits_pkg_stub_cb(cb: CallbackQuery) -> None:
+    await cb.answer("Пока тест-режим. Используйте тестовую покупку (+3).", show_alert=True)
+
+
+@router.callback_query(F.data == "credits:test:3")
+async def credits_test_buy_3_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not _is_seller(tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    seller_id = await ensure_seller(pool, tg_id)
+    new_balance = await add_seller_credits(pool, seller_id=seller_id, delta=3, reason="test_package_3")
+
+    text = (
+        "✅ Тестовая покупка выполнена\n"
+        "Начислено: +3\n"
+        f"Новый баланс: {new_balance}"
+    )
+    await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb="seller:home"))
     await cb.answer()
 
 

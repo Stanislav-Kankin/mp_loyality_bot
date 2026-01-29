@@ -8,8 +8,24 @@ def seller_main_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏪 Магазины", callback_data="seller:shops")
     kb.button(text="📣 Рассылки", callback_data="seller:campaigns")
+    kb.button(text="💰 Купить рассылки", callback_data="credits:menu")
     kb.button(text="🧾 Заказы", callback_data="seller:orders:stub")
-    kb.adjust(1, 2)
+    kb.adjust(1, 2, 1)
+    return kb.as_markup()
+
+
+def credits_packages_menu(*, back_cb: str = "seller:home") -> InlineKeyboardMarkup:
+    """Packages screen for buying campaign credits.
+
+    Step B (test-mode): real payments will be implemented later; for now we expose a test button.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="1 рассылка — 1000 ₽", callback_data="credits:pkg:1")
+    kb.button(text="3 рассылки — 2890 ₽", callback_data="credits:pkg:3")
+    kb.button(text="10 рассылок — 27500 ₽", callback_data="credits:pkg:10")
+    kb.button(text="🧪 ТЕСТОВАЯ ПОКУПКА 3 РАССЫЛКИ", callback_data="credits:test:3")
+    kb.button(text="⬅️ Назад", callback_data=back_cb)
+    kb.adjust(1)
     return kb.as_markup()
 
 
