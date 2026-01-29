@@ -12,6 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
 from loyalty_bot.db.repo import (
+    is_seller_allowed,
     get_seller_credits,
     start_campaign_sending,
     mark_campaign_paid_test,
@@ -88,7 +89,7 @@ async def campaign_create_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("campaignedit:cancel:"))
 async def campaign_edit_cancel(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -119,7 +120,7 @@ async def campaign_edit_cancel(cb: CallbackQuery, state: FSMContext, pool: async
 @router.callback_query(F.data.startswith("campaign:edit:"))
 async def campaign_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -299,7 +300,7 @@ async def campaignedit_skip_button_title(cb: CallbackQuery, state: FSMContext) -
 @router.callback_query(F.data == "campaignedit:skip:url")
 async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -332,7 +333,7 @@ def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
 @router.callback_query(F.data.regexp(r"^shop:campaigns:\d+$"))
 async def shop_campaigns_menu(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -363,7 +364,7 @@ async def shop_campaigns_menu(cb: CallbackQuery, state: FSMContext, pool: asyncp
 @router.callback_query(F.data.startswith("shop:campaigns:new:"))
 async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -391,7 +392,7 @@ _CAMPAIGNS_PAGE_SIZE = 10
 @router.callback_query(F.data.regexp(r"^shop:campaigns:list:\d+(?::\d+)?$"))
 async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -470,8 +471,10 @@ class CampaignCreate(StatesGroup):
     url = State()
 
 
-def _is_seller(tg_id: int) -> bool:
-    return tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set
+async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    if tg_id in settings.admin_ids_set:
+        return True
+    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
 
 
 def _is_valid_url(url: str) -> bool:
@@ -521,7 +524,7 @@ def _format_dt(val: object) -> str:
 @router.callback_query(F.data == "seller:campaigns")
 async def seller_campaigns_home(cb: CallbackQuery) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
     await cb.message.edit_text("Рассылки:", reply_markup=campaigns_menu())
@@ -531,7 +534,7 @@ async def seller_campaigns_home(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "campaigns:create")
 async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -559,7 +562,7 @@ async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asy
 @router.callback_query(F.data.startswith("campaigns:shop:"))
 async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -579,7 +582,7 @@ async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(CampaignCreate.text)
 async def campaigns_text(message: Message, state: FSMContext) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
@@ -666,7 +669,7 @@ async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
 @router.message(CampaignCreate.button_title)
 async def campaigns_button_title(message: Message, state: FSMContext) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
@@ -699,7 +702,7 @@ async def campaigns_button_title(message: Message, state: FSMContext) -> None:
 @router.message(CampaignCreate.url)
 async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
@@ -756,7 +759,7 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
 @router.callback_query(F.data.regexp(r"^campaigns:list(?::\d+)?$"))
 async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -809,7 +812,7 @@ async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("campaign:open:"))
 async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -838,7 +841,7 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("campaign:preview:"))
 async def campaign_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -878,7 +881,7 @@ async def campaign_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("preview:open:"))
 async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -929,7 +932,7 @@ async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("campaign:send:"))
 async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 

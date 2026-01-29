@@ -4,13 +4,27 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def seller_main_menu() -> InlineKeyboardMarkup:
+def seller_main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏪 Магазины", callback_data="seller:shops")
     kb.button(text="📣 Рассылки", callback_data="seller:campaigns")
     kb.button(text="💰 Купить рассылки", callback_data="credits:menu")
     kb.button(text="🧾 Заказы", callback_data="seller:orders:stub")
-    kb.adjust(1, 2, 1)
+    if is_admin:
+        kb.button(text="🛠 Админка", callback_data="admin:home")
+        kb.adjust(1, 2, 2)
+    else:
+        kb.adjust(1, 2, 1)
+    return kb.as_markup()
+
+
+def admin_main_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📊 Статистика", callback_data="admin:home")
+    kb.button(text="👥 Селлеры", callback_data="admin:sellers:page:0")
+    kb.button(text="➕ Добавить селлера", callback_data="admin:seller:add")
+    kb.button(text="⬅️ Назад", callback_data="seller:home")
+    kb.adjust(2, 1, 1)
     return kb.as_markup()
 
 
@@ -105,6 +119,7 @@ def campaign_actions(
     kb.adjust(1)
     return kb.as_markup()
 
+
 def campaign_card_actions(
     campaign_id: int,
     *,
@@ -143,13 +158,13 @@ def cancel_kb(callback_data: str = "cancel") -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def cancel_skip_kb(*, skip_cb: str, cancel_cb: str, skip_text: str = '⏭ Пропустить') -> InlineKeyboardMarkup:
+def cancel_skip_kb(*, skip_cb: str, cancel_cb: str, skip_text: str = "⏭ Пропустить") -> InlineKeyboardMarkup:
     """Inline keyboard with Skip + Cancel.
 
     Used in edit flows where 'Skip' means 'keep current value'.
     """
     kb = InlineKeyboardBuilder()
     kb.button(text=skip_text, callback_data=skip_cb)
-    kb.button(text='❌ Отмена', callback_data=cancel_cb)
+    kb.button(text="❌ Отмена", callback_data=cancel_cb)
     kb.adjust(1)
     return kb.as_markup()

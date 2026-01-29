@@ -25,6 +25,7 @@ from loyalty_bot.db.repo import (
     create_shop,
     ensure_seller,
     get_seller_credits,
+    is_seller_allowed,
     get_shop_for_seller,
     get_shop_welcome,
     get_shop_subscription_stats,
@@ -66,8 +67,11 @@ def _is_admin(tg_id: int) -> bool:
     return tg_id in settings.admin_ids_set
 
 
-def _is_seller(tg_id: int) -> bool:
-    return tg_id in settings.seller_ids_set or _is_admin(tg_id)
+async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    if _is_admin(tg_id):
+        return True
+    # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
+    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
 
 
 def _shop_deeplink(bot_username: str, shop_id: int) -> str:
@@ -77,32 +81,38 @@ def _shop_deeplink(bot_username: str, shop_id: int) -> str:
 @router.message(Command("seller"))
 async def seller_home_cmd(message: Message, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
     await ensure_seller(pool, tg_id)
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
-    await message.answer(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
+    await message.answer(
+        f"Панель селлера:\nДоступно рассылок: {credits}",
+        reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)),
+    )
 
 
 @router.callback_query(F.data == "seller:home")
 async def seller_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
     await ensure_seller(pool, tg_id)
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
-    await cb.message.edit_text(f"Панель селлера:\nДоступно рассылок: {credits}", reply_markup=seller_main_menu())
+    await cb.message.edit_text(
+        f"Панель селлера:\nДоступно рассылок: {credits}",
+        reply_markup=seller_main_menu(is_admin=_is_admin(tg_id)),
+    )
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("credits:menu"))
 async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -134,7 +144,7 @@ async def credits_pkg_stub_cb(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("credits:test:3"))
 async def credits_test_buy_3_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -160,7 +170,7 @@ async def credits_test_buy_3_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data == "seller:shops")
 async def seller_shops_cb(cb: CallbackQuery) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
     await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
@@ -176,7 +186,7 @@ async def seller_orders_stub(cb: CallbackQuery) -> None:
 @router.callback_query(F.data == "shops:create")
 async def shops_create_start(cb: CallbackQuery, state: FSMContext) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
     await state.clear()
@@ -188,7 +198,7 @@ async def shops_create_start(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(ShopCreate.name)
 async def shops_create_name(message: Message, state: FSMContext) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
@@ -205,7 +215,7 @@ async def shops_create_name(message: Message, state: FSMContext) -> None:
 @router.message(ShopCreate.category)
 async def shops_create_category(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
         return
 
@@ -239,7 +249,7 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
 @router.callback_query(F.data == "shops:list")
 async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -265,7 +275,7 @@ async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("shop:open:"))
 async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -292,7 +302,7 @@ async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("shop:link:"))
 async def shop_link(cb: CallbackQuery) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -311,7 +321,7 @@ async def shop_link(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("shop:qr:"))
 async def shop_qr(cb: CallbackQuery) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -332,7 +342,7 @@ async def shop_qr(cb: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("shop:stats:"))
 async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -371,7 +381,7 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("shop:welcome:"))
 async def shop_welcome_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -420,7 +430,7 @@ async def shop_welcome_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg
 @router.callback_query(F.data.startswith("shopwelcome:preview:"))
 async def shop_welcome_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -464,7 +474,7 @@ async def shop_welcome_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 @router.callback_query(F.data.startswith("shopwelcome:edit:"))
 async def shop_welcome_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -555,7 +565,7 @@ async def _shop_welcome_finish_update(*, message: Message, pool: asyncpg.Pool, t
 @router.callback_query(F.data == "shopwelcome:skip:text")
 async def shop_welcome_skip_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -616,7 +626,7 @@ async def shop_welcome_text(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "shopwelcome:skip:photo")
 async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -652,7 +662,7 @@ async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: as
 @router.message(ShopWelcome.photo)
 async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         return
 
     data = await state.get_data()
@@ -693,7 +703,7 @@ async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.
 @router.callback_query(F.data == "shopwelcome:skip:button_text")
 async def shop_welcome_skip_button_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -732,7 +742,7 @@ async def shop_welcome_skip_button_text(cb: CallbackQuery, state: FSMContext, po
 @router.message(ShopWelcome.button_text)
 async def shop_welcome_button_text(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         return
 
     btn = (message.text or "").strip()
@@ -768,7 +778,7 @@ async def shop_welcome_button_text(message: Message, state: FSMContext, pool: as
 @router.callback_query(F.data == "shopwelcome:skip:url")
 async def shop_welcome_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -796,7 +806,7 @@ async def shop_welcome_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
 @router.message(ShopWelcome.url)
 async def shop_welcome_url(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
-    if tg_id is None or not _is_seller(tg_id):
+    if tg_id is None or not await _is_seller(pool, tg_id):
         return
 
     url = (message.text or "").strip()
@@ -811,7 +821,7 @@ async def shop_welcome_url(message: Message, state: FSMContext, pool: asyncpg.Po
 @router.callback_query(F.data.startswith("shopwelcome:cancel:"))
 async def shop_welcome_cancel(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
-    if not _is_seller(tg_id):
+    if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 

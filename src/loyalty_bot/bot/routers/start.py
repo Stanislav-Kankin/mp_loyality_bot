@@ -15,6 +15,7 @@ from loyalty_bot.db.repo import (
     get_customer,
     ensure_seller,
     get_seller_credits,
+    is_seller_allowed,
     shop_exists,
     shop_is_active,
     subscribe_customer_to_shop,
@@ -110,21 +111,27 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         await _send_shop_welcome(message, pool, shop_id)
         return
 
-    # Seller flow (allowlist from env)
-    if tg_id in settings.seller_ids_set or tg_id in settings.admin_ids_set:
+    # Seller flow
+    # Admins are always allowed.
+    # Sellers are allowed either via DB allowlist (preferred) or via legacy env SELLER_TG_IDS.
+    allowed = tg_id in settings.admin_ids_set
+    if not allowed:
+        allowed = await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
+
+    if allowed:
         await ensure_seller(pool, tg_id)
         credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
         await message.answer(
             f"Панель селлера:\n"
             f"Доступно рассылок: {credits}",
-            reply_markup=seller_main_menu(),
+            reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
         )
         return
 
     await message.answer(
         "Это бот лояльности магазина.\n\n"
         "Чтобы подписаться — перейдите по ссылке/QR от продавца.\n"
-        "Если вы продавец — попросите администратора добавить ваш TG id в SELLER_TG_IDS."
+        "Если вы продавец — попросите администратора добавить ваш TG id в админке бота."
     )
 
 

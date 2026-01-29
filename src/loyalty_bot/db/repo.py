@@ -1078,3 +1078,218 @@ async def get_campaign_url(pool: asyncpg.Pool, *, campaign_id: int) -> str | Non
         if url is None:
             return None
         return str(url)
+
+
+# ------------------------
+# Seller access (DB allowlist) + Admin analytics
+# ------------------------
+
+
+async def is_seller_allowed(pool: asyncpg.Pool, tg_user_id: int) -> bool:
+    """Return True if tg_user_id is allowed to use seller panel via DB allowlist."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1
+            FROM seller_access
+            WHERE tg_user_id=$1 AND is_active=TRUE
+            LIMIT 1;
+            """,
+            tg_user_id,
+        )
+        return row is not None
+
+
+async def upsert_seller_access(
+    pool: asyncpg.Pool,
+    *,
+    tg_user_id: int,
+    is_active: bool = True,
+    note: str | None = None,
+    added_by_tg_user_id: int | None = None,
+) -> None:
+    """Insert or update a seller access entry."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO seller_access(tg_user_id, is_active, note, added_by_tg_user_id)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (tg_user_id)
+            DO UPDATE SET
+                is_active = EXCLUDED.is_active,
+                note = EXCLUDED.note,
+                added_by_tg_user_id = COALESCE(EXCLUDED.added_by_tg_user_id, seller_access.added_by_tg_user_id),
+                updated_at = now();
+            """,
+            tg_user_id,
+            is_active,
+            note,
+            added_by_tg_user_id,
+        )
+
+
+async def set_seller_access_active(pool: asyncpg.Pool, *, tg_user_id: int, is_active: bool) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE seller_access
+            SET is_active=$2, updated_at=now()
+            WHERE tg_user_id=$1;
+            """,
+            tg_user_id,
+            is_active,
+        )
+
+
+async def get_admin_overview(pool: asyncpg.Pool) -> dict:
+    """Return basic platform stats for admin panel."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM sellers) AS sellers_total,
+              (SELECT COUNT(*) FROM seller_access WHERE is_active=TRUE) AS sellers_allowed,
+              (SELECT COUNT(*) FROM shops WHERE is_active=TRUE) AS shops_active,
+              (SELECT COUNT(*) FROM campaigns) AS campaigns_total,
+              (SELECT COUNT(*) FROM campaigns WHERE created_at >= now() - interval '7 days') AS campaigns_7d,
+              (SELECT COALESCE(SUM(balance), 0) FROM seller_credits) AS credits_total
+            ;
+            """
+        )
+        return {
+            "sellers_total": int(row["sellers_total"] or 0),
+            "sellers_allowed": int(row["sellers_allowed"] or 0),
+            "shops_active": int(row["shops_active"] or 0),
+            "campaigns_total": int(row["campaigns_total"] or 0),
+            "campaigns_7d": int(row["campaigns_7d"] or 0),
+            "credits_total": int(row["credits_total"] or 0),
+        }
+
+
+async def list_admin_sellers_page(
+    pool: asyncpg.Pool,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[dict], bool]:
+    """List sellers from seller_access with basic metrics. Returns (items, has_next)."""
+    page_size = max(1, min(int(limit), 50))
+    off = max(0, int(offset))
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH base AS (
+              SELECT sa.tg_user_id, sa.is_active, sa.created_at
+              FROM seller_access sa
+              ORDER BY sa.created_at DESC
+              OFFSET $1
+              LIMIT $2
+            ), sm AS (
+              SELECT s.id AS seller_id, s.tg_user_id
+              FROM sellers s
+              WHERE s.tg_user_id IN (SELECT tg_user_id FROM base)
+            )
+            SELECT
+              b.tg_user_id,
+              b.is_active,
+              b.created_at,
+              COALESCE(sc.balance, 0) AS credits,
+              COALESCE(sh.cnt, 0) AS shops_count,
+              COALESCE(cp.cnt, 0) AS campaigns_count,
+              COALESCE(sp.spent, 0) AS spent_total,
+              cp.last_campaign_at
+            FROM base b
+            LEFT JOIN sm ON sm.tg_user_id = b.tg_user_id
+            LEFT JOIN seller_credits sc ON sc.seller_id = sm.seller_id
+            LEFT JOIN (SELECT seller_id, COUNT(*) AS cnt FROM shops GROUP BY seller_id) sh ON sh.seller_id = sm.seller_id
+            LEFT JOIN (
+              SELECT s2.tg_user_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
+              FROM sellers s2
+              LEFT JOIN shops sp2 ON sp2.seller_id = s2.id
+              LEFT JOIN campaigns c ON c.shop_id = sp2.id
+              GROUP BY s2.tg_user_id
+            ) cp ON cp.tg_user_id = b.tg_user_id
+            LEFT JOIN (
+              SELECT s3.tg_user_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
+              FROM sellers s3
+              LEFT JOIN seller_credit_transactions t ON t.seller_id = s3.id
+              GROUP BY s3.tg_user_id
+            ) sp ON sp.tg_user_id = b.tg_user_id
+            ORDER BY b.created_at DESC;
+            """,
+            off,
+            page_size + 1,
+        )
+
+    has_next = len(rows) > page_size
+    rows = rows[:page_size]
+
+    items: list[dict] = []
+    for r in rows:
+        items.append(
+            {
+                "tg_user_id": int(r["tg_user_id"]),
+                "is_active": bool(r["is_active"]),
+                "created_at": r["created_at"],
+                "credits": int(r["credits"] or 0),
+                "shops_count": int(r["shops_count"] or 0),
+                "campaigns_count": int(r["campaigns_count"] or 0),
+                "spent_total": int(r["spent_total"] or 0),
+                "last_campaign_at": r["last_campaign_at"],
+            }
+        )
+
+    return items, has_next
+
+
+async def get_admin_seller_details(pool: asyncpg.Pool, *, tg_user_id: int) -> dict | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              sa.tg_user_id, sa.is_active, sa.note, sa.created_at,
+              s.id AS seller_id,
+              COALESCE(sc.balance, 0) AS credits,
+              COALESCE(sh.cnt, 0) AS shops_count,
+              COALESCE(cp.cnt, 0) AS campaigns_count,
+              COALESCE(sp.spent, 0) AS spent_total,
+              cp.last_campaign_at
+            FROM seller_access sa
+            LEFT JOIN sellers s ON s.tg_user_id = sa.tg_user_id
+            LEFT JOIN seller_credits sc ON sc.seller_id = s.id
+            LEFT JOIN (SELECT seller_id, COUNT(*) AS cnt FROM shops GROUP BY seller_id) sh ON sh.seller_id = s.id
+            LEFT JOIN (
+              SELECT s2.tg_user_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
+              FROM sellers s2
+              LEFT JOIN shops sp2 ON sp2.seller_id = s2.id
+              LEFT JOIN campaigns c ON c.shop_id = sp2.id
+              GROUP BY s2.tg_user_id
+            ) cp ON cp.tg_user_id = sa.tg_user_id
+            LEFT JOIN (
+              SELECT s3.tg_user_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
+              FROM sellers s3
+              LEFT JOIN seller_credit_transactions t ON t.seller_id = s3.id
+              GROUP BY s3.tg_user_id
+            ) sp ON sp.tg_user_id = sa.tg_user_id
+            WHERE sa.tg_user_id=$1
+            LIMIT 1;
+            """,
+            tg_user_id,
+        )
+        if row is None:
+            return None
+
+        seller_id = row["seller_id"]
+        return {
+            "tg_user_id": int(row["tg_user_id"]),
+            "is_active": bool(row["is_active"]),
+            "note": row["note"],
+            "created_at": row["created_at"],
+            "seller_id": int(seller_id) if seller_id is not None else None,
+            "credits": int(row["credits"] or 0),
+            "shops_count": int(row["shops_count"] or 0),
+            "campaigns_count": int(row["campaigns_count"] or 0),
+            "spent_total": int(row["spent_total"] or 0),
+            "last_campaign_at": row["last_campaign_at"],
+        }
