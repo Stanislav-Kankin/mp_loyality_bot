@@ -10,8 +10,9 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
+from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
 from loyalty_bot.db.repo import (
+    get_seller_credits,
     start_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
@@ -46,42 +47,31 @@ def _is_edit_flow(data: dict) -> bool:
     return isinstance(data.get("campaign_id"), int)
 
 
-def _build_campaign_actions_markup(*, campaign_id: int, status: str, tg_id: int) -> InlineKeyboardMarkup:
-    """Base actions + optional edit button for draft."""
-    markup = campaign_actions(
-        campaign_id,
-        show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
-        show_send=(str(status) == "paid"),
-    )
-    if str(status) == "draft":
-        b = InlineKeyboardBuilder.from_markup(markup)
-        b.button(text="✏️ Изменить", callback_data=f"campaign:edit:{campaign_id}")
-        b.adjust(1)
-        return b.as_markup()
-    return markup
+def _build_campaign_actions_markup(*, campaign_id: int, credits: int) -> InlineKeyboardMarkup:
+    """Step D: simplified campaign card actions."""
+    return campaign_card_actions(campaign_id, credits=credits, back_cb="campaigns:list")
 
 
-def _campaign_card_text(camp: dict) -> str:
+
+def _campaign_card_text(camp: dict, *, credits: int) -> str:
     preview = str(camp.get("text") or "")
     if len(preview) > 350:
         preview = preview[:350] + "…"
 
     return (
         f"Рассылка №{camp['id']}\n"
-        f"<b>Статус:</b> {_status_label(str(camp.get('status') or ''))}\n"
+        f"<b>Доступно рассылок:</b> {credits}\n"
         f"<b>Магазин:</b> {html.escape(str(camp.get('shop_name','')))}\n"
         f"<b>Создана:</b> {_format_dt(camp.get('created_at'))}\n\n"
         f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
-        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}\n"
-        f"<b>URL:</b> {html.escape(str(camp.get('url') or ''))}\n"
-        f"<b>Цена:</b> {_format_price(int(camp.get('price_minor') or 0), str(camp.get('currency') or ''))}"
+        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}"
     )
 
 
-async def _render_campaign_card(*, message: Message, camp: dict, tg_id: int) -> None:
+async def _render_campaign_card(*, message: Message, camp: dict, tg_id: int, credits: int) -> None:
     await message.edit_text(
-        _campaign_card_text(camp),
-        reply_markup=_build_campaign_actions_markup(campaign_id=int(camp['id']), status=str(camp.get('status') or ''), tg_id=tg_id),
+        _campaign_card_text(camp, credits=credits),
+        reply_markup=_build_campaign_actions_markup(campaign_id=int(camp['id']), credits=credits),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -116,9 +106,10 @@ async def campaign_edit_cancel(cb: CallbackQuery, state: FSMContext, pool: async
         return
 
     # Re-render card in-place
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     await cb.message.edit_text(
-        _campaign_card_text(camp),
-        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, status=str(camp.get('status') or ''), tg_id=tg_id),
+        _campaign_card_text(camp, credits=credits),
+        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, credits=credits),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -208,7 +199,17 @@ async def _campaign_finish_edit(message: Message, state: FSMContext, pool: async
     )
 
     await state.clear()
-    await message.answer("Черновик рассылки обновлён ✅")
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if camp is None:
+        await message.answer("Черновик рассылки обновлён ✅")
+        return
+    await message.answer(
+        _campaign_card_text(camp, credits=credits),
+        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, credits=credits),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 @router.callback_query(F.data == "campaignedit:skip:text")
@@ -740,19 +741,16 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
     )
     await state.clear()
 
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if camp is None:
+        await message.answer("Рассылка создана ✅")
+        return
     await message.answer(
-        "Черновик рассылки создан ✅\n\n"
-        f"ID кампании: {campaign_id}\n"
-        f"Текст: {text_val[:200]}{'…' if len(text_val) > 200 else ''}\n"
-        f"Кнопка: {button_title}\n"
-        f"URL: {url}\n\n"
-        f"Стоимость: {_format_price(settings.price_per_campaign_minor, settings.currency)}\n"
-        "Оплата будет на следующем этапе.",
-        reply_markup=campaign_actions(
-            campaign_id,
-            show_test=(settings.payments_test_mode and tg_id in settings.admin_ids_set),
-            show_send=False,
-        ),
+        _campaign_card_text(camp, credits=credits),
+        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, credits=credits),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
 
 @router.callback_query(F.data.regexp(r"^campaigns:list(?::\d+)?$"))
@@ -826,26 +824,10 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Кампания не найдена", show_alert=True)
         return
 
-    preview = camp["text"]
-    if len(preview) > 350:
-        preview = preview[:350] + "…"
-
-    markup = _build_campaign_actions_markup(
-        campaign_id=campaign_id,
-        status=str(camp.get("status") or ""),
-        tg_id=tg_id,
-    )
-
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     await cb.message.edit_text(
-        f"Рассылка №{camp['id']}\n"
-        f"<b>Статус:</b> {_status_label(camp['status'])}\n"
-        f"<b>Магазин:</b> {html.escape(camp.get('shop_name',''))}\n"
-        f"<b>Создана:</b> {_format_dt(camp['created_at'])}\n\n"
-        f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
-        f"<b>Кнопка:</b> {html.escape(camp['button_title'])}\n"
-        f"<b>URL:</b> {html.escape(camp['url'])}\n"
-        f"<b>Цена:</b> {_format_price(camp['price_minor'], camp['currency'])}",
-        reply_markup=markup,
+        _campaign_card_text(camp, credits=credits),
+        reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, credits=credits),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -957,6 +939,15 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         return
     campaign_id = int(raw_id)
 
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if credits <= 0:
+        await cb.message.edit_text(
+            "У вас 0 доступных рассылок. Купите пакет:",
+            reply_markup=credits_packages_menu(back_cb=f"campaign:open:{campaign_id}", context=f"c{campaign_id}"),
+        )
+        await cb.answer()
+        return
+
     try:
         total = await start_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
     except ValueError as e:
@@ -964,16 +955,33 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         if code == "campaign_not_found":
             await cb.answer("Кампания не найдена", show_alert=True)
             return
-        if code == "campaign_not_paid":
-            await cb.answer("Кампания не оплачена", show_alert=True)
+        if code == "campaign_already_started":
+            await cb.answer("Эта рассылка уже запущена", show_alert=True)
+            return
+        if code == "campaign_invalid_status":
+            await cb.answer("Эту рассылку нельзя запустить", show_alert=True)
             return
         if code == "no_credits":
-            await cb.answer("Недостаточно рассылок на балансе", show_alert=True)
+            await cb.message.edit_text(
+                "У вас 0 доступных рассылок. Купите пакет:",
+                reply_markup=credits_packages_menu(back_cb=f"campaign:open:{campaign_id}", context=f"c{campaign_id}"),
+            )
+            await cb.answer()
             return
         await cb.answer("Не удалось запустить рассылку", show_alert=True)
         return
 
     await cb.answer("Запущено ✅")
+    # Try to refresh the card to show updated credits.
+    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
+    new_credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if camp is not None:
+        await cb.message.edit_text(
+            _campaign_card_text(camp, credits=new_credits),
+            reply_markup=_build_campaign_actions_markup(campaign_id=campaign_id, credits=new_credits),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     await cb.message.answer(
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
         "Воркер отправит сообщения в фоне."

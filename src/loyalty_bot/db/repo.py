@@ -749,7 +749,8 @@ async def start_campaign_sending(
 ) -> int:
     """Start campaign sending.
 
-    - Verifies campaign belongs to seller and is in "paid" status.
+    - Verifies campaign belongs to seller.
+    - Rejects campaigns already in progress / finished.
     - Consumes 1 seller credit atomically.
     - Enqueues deliveries for all subscribed customers of the campaign shop.
 
@@ -771,8 +772,12 @@ async def start_campaign_sending(
             )
             if camp is None:
                 raise ValueError("campaign_not_found")
-            if str(camp["status"]) != "paid":
-                raise ValueError("campaign_not_paid")
+
+            status = str(camp["status"] or "")
+            if status in {"sending", "completed", "sent"}:
+                raise ValueError("campaign_already_started")
+            if status in {"canceled", "cancelled"}:
+                raise ValueError("campaign_invalid_status")
 
             seller_id = int(camp["seller_id"])
 

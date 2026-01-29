@@ -14,16 +14,17 @@ def seller_main_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def credits_packages_menu(*, back_cb: str = "seller:home") -> InlineKeyboardMarkup:
+def credits_packages_menu(*, back_cb: str = "seller:home", context: str | None = None) -> InlineKeyboardMarkup:
     """Packages screen for buying campaign credits.
 
     Step B (test-mode): real payments will be implemented later; for now we expose a test button.
     """
     kb = InlineKeyboardBuilder()
-    kb.button(text="1 рассылка — 1000 ₽", callback_data="credits:pkg:1")
-    kb.button(text="3 рассылки — 2890 ₽", callback_data="credits:pkg:3")
-    kb.button(text="10 рассылок — 27500 ₽", callback_data="credits:pkg:10")
-    kb.button(text="🧪 ТЕСТОВАЯ ПОКУПКА 3 РАССЫЛКИ", callback_data="credits:test:3")
+    suffix = f":{context}" if context else ""
+    kb.button(text="1 рассылка — 1000 ₽", callback_data=f"credits:pkg:1{suffix}")
+    kb.button(text="3 рассылки — 2890 ₽", callback_data=f"credits:pkg:3{suffix}")
+    kb.button(text="10 рассылок — 27500 ₽", callback_data=f"credits:pkg:10{suffix}")
+    kb.button(text="🧪 ТЕСТОВАЯ ПОКУПКА 3 РАССЫЛКИ", callback_data=f"credits:test:3{suffix}")
     kb.button(text="⬅️ Назад", callback_data=back_cb)
     kb.adjust(1)
     return kb.as_markup()
@@ -101,6 +102,25 @@ def campaign_actions(
     if show_send:
         kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
     kb.button(text="⬅️ Назад", callback_data="campaigns:list")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def campaign_card_actions(
+    campaign_id: int,
+    *,
+    credits: int,
+    back_cb: str = "campaigns:list",
+) -> InlineKeyboardMarkup:
+    """Actions for campaign card.
+
+    Step D: simplified card UI + credits.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
+    kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
+    if credits <= 0:
+        kb.button(text="💰 Купить рассылки", callback_data=f"credits:menu:c{campaign_id}")
+    kb.button(text="⬅️ Назад", callback_data=back_cb)
     kb.adjust(1)
     return kb.as_markup()
 
