@@ -106,7 +106,7 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
 
 
 async def main() -> None:
-    setup_logging(settings.log_level)
+    setup_logging(level=settings.log_level, service_name="worker", log_dir=settings.log_dir)
 
     pool: asyncpg.Pool = await create_pool(settings.database_dsn)
     async with pool.acquire() as conn:

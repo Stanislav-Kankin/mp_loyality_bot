@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     retry_max_seconds: int = 3600
 
     log_level: str = "INFO"
+    log_dir: str = "/app/logs"
 
     @staticmethod
     def _parse_ids(value: str) -> set[int]:
