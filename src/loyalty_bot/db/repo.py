@@ -538,6 +538,33 @@ async def update_campaign_draft(
         if row is None:
             raise ValueError('campaign_not_editable')
 async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, limit: int = 10) -> list[dict]:
+    items, _has_next = await list_seller_campaigns_page(
+        pool,
+        seller_tg_user_id=seller_tg_user_id,
+        limit=limit,
+        offset=0,
+    )
+    return items
+
+
+async def list_seller_campaigns_page(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    limit: int = 10,
+    offset: int = 0,
+) -> tuple[list[dict], bool]:
+    """Return a page of campaigns for seller.
+
+    Returns (items, has_next).
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 50:
+        limit = 50
+    if offset < 0:
+        offset = 0
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -547,21 +574,30 @@ async def list_seller_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int, l
             JOIN sellers s ON s.id = sh.seller_id
             WHERE s.tg_user_id=$1
             ORDER BY c.created_at DESC, c.id DESC
-            LIMIT $2;
+            OFFSET $2
+            LIMIT $3;
             """,
             seller_tg_user_id,
-            limit,
+            offset,
+            limit + 1,
         )
-        return [
-            {
-                "id": int(r["id"]),
-                "status": str(r["status"]),
-                "created_at": r["created_at"],
-                "shop_id": int(r["shop_id"]),
-                "shop_name": str(r["shop_name"]),
-            }
-            for r in rows
-        ]
+
+        has_next = len(rows) > limit
+        rows = rows[:limit]
+
+        return (
+            [
+                {
+                    "id": int(r["id"]),
+                    "status": str(r["status"]),
+                    "created_at": r["created_at"],
+                    "shop_id": int(r["shop_id"]),
+                    "shop_name": str(r["shop_name"]),
+                }
+                for r in rows
+            ],
+            has_next,
+        )
 
 
 async def list_shop_campaigns(
@@ -571,7 +607,35 @@ async def list_shop_campaigns(
     shop_id: int,
     limit: int = 10,
 ) -> list[dict]:
-    """Return last campaigns for a specific shop owned by seller."""
+    items, _has_next = await list_shop_campaigns_page(
+        pool,
+        seller_tg_user_id=seller_tg_user_id,
+        shop_id=shop_id,
+        limit=limit,
+        offset=0,
+    )
+    return items
+
+
+async def list_shop_campaigns_page(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    shop_id: int,
+    limit: int = 10,
+    offset: int = 0,
+) -> tuple[list[dict], bool]:
+    """Return a page of campaigns for a specific shop owned by seller.
+
+    Returns (items, has_next).
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 50:
+        limit = 50
+    if offset < 0:
+        offset = 0
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -581,22 +645,31 @@ async def list_shop_campaigns(
             JOIN sellers s ON s.id = sh.seller_id
             WHERE s.tg_user_id=$1 AND sh.id=$2
             ORDER BY c.created_at DESC, c.id DESC
-            LIMIT $3;
+            OFFSET $3
+            LIMIT $4;
             """,
             seller_tg_user_id,
             shop_id,
-            limit,
+            offset,
+            limit + 1,
         )
-        return [
-            {
-                "id": int(r["id"]),
-                "status": str(r["status"]),
-                "created_at": r["created_at"],
-                "shop_id": int(r["shop_id"]),
-                "shop_name": str(r["shop_name"]),
-            }
-            for r in rows
-        ]
+
+        has_next = len(rows) > limit
+        rows = rows[:limit]
+
+        return (
+            [
+                {
+                    "id": int(r["id"]),
+                    "status": str(r["status"]),
+                    "created_at": r["created_at"],
+                    "shop_id": int(r["shop_id"]),
+                    "shop_name": str(r["shop_name"]),
+                }
+                for r in rows
+            ],
+            has_next,
+        )
 
 
 async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int, campaign_id: int) -> dict | None:

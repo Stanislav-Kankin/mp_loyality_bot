@@ -17,8 +17,8 @@ from loyalty_bot.db.repo import (
     create_campaign_draft,
     update_campaign_draft,
     get_campaign_for_seller,
-    list_seller_campaigns,
-    list_shop_campaigns,
+    list_seller_campaigns_page,
+    list_shop_campaigns_page,
     list_seller_shops,
     get_shop_for_seller,
 )
@@ -384,18 +384,31 @@ async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg
     await cb.answer()
 
 
-@router.callback_query(F.data.startswith("shop:campaigns:list:"))
+_CAMPAIGNS_PAGE_SIZE = 10
+
+
+@router.callback_query(F.data.regexp(r"^shop:campaigns:list:\d+(?::\d+)?$"))
 async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
-    raw_id = cb.data.split(":")[-1]
-    if not raw_id.isdigit():
+    parts = cb.data.split(":")
+    # shop:campaigns:list:<shop_id>[:<page>]
+    if len(parts) not in (4, 5):
+        await cb.answer("Некорректная команда", show_alert=True)
+        return
+    raw_shop_id = parts[3]
+    raw_page = parts[4] if len(parts) == 5 else "0"
+
+    if not raw_shop_id.isdigit() or not raw_page.isdigit():
         await cb.answer("Некорректный id", show_alert=True)
         return
-    shop_id = int(raw_id)
+    shop_id = int(raw_shop_id)
+    page = int(raw_page)
+    if page < 0:
+        page = 0
 
     shop = await get_shop_for_seller(pool, seller_tg_user_id=tg_id, shop_id=shop_id)
     if shop is None or not shop.get("is_active", True):
@@ -403,7 +416,15 @@ async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncp
         return
 
     await state.clear()
-    items = await list_shop_campaigns(pool, seller_tg_user_id=tg_id, shop_id=shop_id, limit=10)
+
+    offset = page * _CAMPAIGNS_PAGE_SIZE
+    items, has_next = await list_shop_campaigns_page(
+        pool,
+        seller_tg_user_id=tg_id,
+        shop_id=shop_id,
+        limit=_CAMPAIGNS_PAGE_SIZE,
+        offset=offset,
+    )
     if not items:
         await cb.message.edit_text(
             "У вас пока нет рассылок для этого магазина.",
@@ -414,12 +435,26 @@ async def shop_campaigns_list(cb: CallbackQuery, state: FSMContext, pool: asyncp
 
     kb = InlineKeyboardBuilder()
     for c in items:
-        title = f"#{c['id']} • {c['created_at'].strftime('%Y-%m-%d')}"
+        shop_name = str(c.get("shop_name") or shop.get("name") or "Магазин")
+        if len(shop_name) > 28:
+            shop_name = shop_name[:28] + "…"
+        dt = c.get("created_at")
+        date_s = dt.date().isoformat() if dt else ""
+        title = f"{shop_name} — {date_s}".strip()
         kb.button(text=title, callback_data=f"campaign:open:{c['id']}")
-    kb.button(text="⬅️ Назад", callback_data=f"shop:campaigns:{shop_id}")
+
+    nav = InlineKeyboardBuilder()
+    if page > 0:
+        nav.button(text="⬅️", callback_data=f"shop:campaigns:list:{shop_id}:{page - 1}")
+    nav.button(text="⬅️ Назад", callback_data=f"shop:campaigns:{shop_id}")
+    if has_next:
+        nav.button(text="➡️", callback_data=f"shop:campaigns:list:{shop_id}:{page + 1}")
+    nav.adjust(3)
+
     kb.adjust(1)
+    kb.attach(nav)
     await cb.message.edit_text(
-        f"Ваши рассылки для {html.escape(str(shop.get('name') or shop.get('shop_name') or 'магазина'))} (последние 10):",
+        f"Ваши рассылки (стр. {page + 1}):",
         reply_markup=kb.as_markup(),
     )
     await cb.answer()
@@ -720,30 +755,56 @@ async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool)
         ),
     )
 
-@router.callback_query(F.data == "campaigns:list")
+@router.callback_query(F.data.regexp(r"^campaigns:list(?::\d+)?$"))
 async def campaigns_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not _is_seller(tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
-    campaigns = await list_seller_campaigns(pool, seller_tg_user_id=tg_id, limit=10)
-    if not campaigns:
+    parts = cb.data.split(":")
+    page = 0
+    if len(parts) == 3 and parts[2].isdigit():
+        page = int(parts[2])
+    if page < 0:
+        page = 0
+
+    offset = page * _CAMPAIGNS_PAGE_SIZE
+    items, has_next = await list_seller_campaigns_page(
+        pool,
+        seller_tg_user_id=tg_id,
+        limit=_CAMPAIGNS_PAGE_SIZE,
+        offset=offset,
+    )
+    if not items:
         await cb.message.edit_text("У вас пока нет рассылок.", reply_markup=campaigns_menu())
         await cb.answer()
         return
 
-    items = []
-    for c in campaigns:
-        shop_name = str(c.get("shop_name", ""))
-        if len(shop_name) > 18:
-            shop_name = shop_name[:18] + "…"
-        status_h = _status_label(str(c.get("status", "")))
+    kb = InlineKeyboardBuilder()
+    for c in items:
+        shop_name = str(c.get("shop_name", "Магазин"))
+        if len(shop_name) > 28:
+            shop_name = shop_name[:28] + "…"
         dt = c.get("created_at")
         date_s = dt.date().isoformat() if dt else ""
-        items.append((c["id"], f"#{c['id']} {status_h} · {shop_name} ({date_s})"))
+        title = f"{shop_name} — {date_s}".strip()
+        kb.button(text=title, callback_data=f"campaign:open:{c['id']}")
 
-    await cb.message.edit_text("Ваши рассылки (последние 10):", reply_markup=campaigns_list_kb(items))
+    nav = InlineKeyboardBuilder()
+    if page > 0:
+        nav.button(text="⬅️", callback_data=f"campaigns:list:{page - 1}")
+    nav.button(text="⬅️ Назад", callback_data="seller:campaigns")
+    if has_next:
+        nav.button(text="➡️", callback_data=f"campaigns:list:{page + 1}")
+    nav.adjust(3)
+
+    kb.adjust(1)
+    kb.attach(nav)
+    await cb.message.edit_text(
+        f"Ваши рассылки (стр. {page + 1}):",
+        reply_markup=kb.as_markup(),
+    )
     await cb.answer()
 
 
@@ -770,7 +831,7 @@ async def campaign_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         preview = preview[:350] + "…"
 
     markup = _build_campaign_actions_markup(
-        campaign_id,
+        campaign_id=campaign_id,
         status=str(camp.get("status") or ""),
         tg_id=tg_id,
     )
