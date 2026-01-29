@@ -522,7 +522,7 @@ def _format_dt(val: object) -> str:
 
 
 @router.callback_query(F.data == "seller:campaigns")
-async def seller_campaigns_home(cb: CallbackQuery) -> None:
+async def seller_campaigns_home(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -560,7 +560,7 @@ async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asy
 
 
 @router.callback_query(F.data.startswith("campaigns:shop:"))
-async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
+async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -580,7 +580,7 @@ async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(CampaignCreate.text)
-async def campaigns_text(message: Message, state: FSMContext) -> None:
+async def campaigns_text(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -667,7 +667,7 @@ async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CampaignCreate.button_title)
-async def campaigns_button_title(message: Message, state: FSMContext) -> None:
+async def campaigns_button_title(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
