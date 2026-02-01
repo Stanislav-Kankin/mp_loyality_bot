@@ -168,7 +168,7 @@ async def credits_test_buy_3_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 
 @router.callback_query(F.data == "seller:shops")
-async def seller_shops_cb(cb: CallbackQuery) -> None:
+async def seller_shops_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -184,7 +184,7 @@ async def seller_orders_stub(cb: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "shops:create")
-async def shops_create_start(cb: CallbackQuery, state: FSMContext) -> None:
+async def shops_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -196,7 +196,7 @@ async def shops_create_start(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(ShopCreate.name)
-async def shops_create_name(message: Message, state: FSMContext) -> None:
+async def shops_create_name(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -300,7 +300,7 @@ async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 
 @router.callback_query(F.data.startswith("shop:link:"))
-async def shop_link(cb: CallbackQuery) -> None:
+async def shop_link(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -319,7 +319,7 @@ async def shop_link(cb: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("shop:qr:"))
-async def shop_qr(cb: CallbackQuery) -> None:
+async def shop_qr(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
