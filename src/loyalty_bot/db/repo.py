@@ -1129,12 +1129,15 @@ async def upsert_seller_access(
 
 
 async def set_seller_access_active(pool: asyncpg.Pool, *, tg_user_id: int, is_active: bool) -> None:
+    """Enable/disable seller access. Creates seller_access row if missing."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            UPDATE seller_access
-            SET is_active=$2, updated_at=now()
-            WHERE tg_user_id=$1;
+            INSERT INTO seller_access(tg_user_id, is_active)
+            VALUES ($1, $2)
+            ON CONFLICT (tg_user_id) DO UPDATE
+            SET is_active = EXCLUDED.is_active,
+                updated_at = now();
             """,
             tg_user_id,
             is_active,
@@ -1172,7 +1175,7 @@ async def list_admin_sellers_page(
     offset: int,
     limit: int,
 ) -> tuple[list[dict], bool]:
-    """List sellers from seller_access with basic metrics. Returns (items, has_next)."""
+    """List all sellers with basic metrics (paged). Returns (items, has_next)."""
     page_size = max(1, min(int(limit), 50))
     off = max(0, int(offset))
 
@@ -1180,19 +1183,15 @@ async def list_admin_sellers_page(
         rows = await conn.fetch(
             """
             WITH base AS (
-              SELECT sa.tg_user_id, sa.is_active, sa.created_at
-              FROM seller_access sa
-              ORDER BY sa.created_at DESC
+              SELECT s.id AS seller_id, s.tg_user_id, s.created_at
+              FROM sellers s
+              ORDER BY s.created_at DESC
               OFFSET $1
               LIMIT $2
-            ), sm AS (
-              SELECT s.id AS seller_id, s.tg_user_id
-              FROM sellers s
-              WHERE s.tg_user_id IN (SELECT tg_user_id FROM base)
             )
             SELECT
               b.tg_user_id,
-              b.is_active,
+              COALESCE(sa.is_active, FALSE) AS is_active,
               b.created_at,
               COALESCE(sc.balance, 0) AS credits,
               COALESCE(sh.cnt, 0) AS shops_count,
@@ -1200,22 +1199,24 @@ async def list_admin_sellers_page(
               COALESCE(sp.spent, 0) AS spent_total,
               cp.last_campaign_at
             FROM base b
-            LEFT JOIN sm ON sm.tg_user_id = b.tg_user_id
-            LEFT JOIN seller_credits sc ON sc.seller_id = sm.seller_id
-            LEFT JOIN (SELECT seller_id, COUNT(*) AS cnt FROM shops GROUP BY seller_id) sh ON sh.seller_id = sm.seller_id
+            LEFT JOIN seller_access sa ON sa.tg_user_id = b.tg_user_id
+            LEFT JOIN seller_credits sc ON sc.seller_id = b.seller_id
             LEFT JOIN (
-              SELECT s2.tg_user_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
-              FROM sellers s2
-              LEFT JOIN shops sp2 ON sp2.seller_id = s2.id
-              LEFT JOIN campaigns c ON c.shop_id = sp2.id
-              GROUP BY s2.tg_user_id
-            ) cp ON cp.tg_user_id = b.tg_user_id
+              SELECT seller_id, COUNT(*) AS cnt
+              FROM shops
+              GROUP BY seller_id
+            ) sh ON sh.seller_id = b.seller_id
             LEFT JOIN (
-              SELECT s3.tg_user_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
-              FROM sellers s3
-              LEFT JOIN seller_credit_transactions t ON t.seller_id = s3.id
-              GROUP BY s3.tg_user_id
-            ) sp ON sp.tg_user_id = b.tg_user_id
+              SELECT sh2.seller_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
+              FROM shops sh2
+              LEFT JOIN campaigns c ON c.shop_id = sh2.id
+              GROUP BY sh2.seller_id
+            ) cp ON cp.seller_id = b.seller_id
+            LEFT JOIN (
+              SELECT t.seller_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
+              FROM seller_credit_transactions t
+              GROUP BY t.seller_id
+            ) sp ON sp.seller_id = b.seller_id
             ORDER BY b.created_at DESC;
             """,
             off,
@@ -1244,35 +1245,41 @@ async def list_admin_sellers_page(
 
 
 async def get_admin_seller_details(pool: asyncpg.Pool, *, tg_user_id: int) -> dict | None:
+    """Return detailed seller metrics for admin panel. Works even if seller_access row is missing."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT
-              sa.tg_user_id, sa.is_active, sa.note, sa.created_at,
+              s.tg_user_id,
+              COALESCE(sa.is_active, FALSE) AS is_active,
+              sa.note,
+              COALESCE(sa.created_at, s.created_at) AS created_at,
               s.id AS seller_id,
               COALESCE(sc.balance, 0) AS credits,
               COALESCE(sh.cnt, 0) AS shops_count,
               COALESCE(cp.cnt, 0) AS campaigns_count,
               COALESCE(sp.spent, 0) AS spent_total,
               cp.last_campaign_at
-            FROM seller_access sa
-            LEFT JOIN sellers s ON s.tg_user_id = sa.tg_user_id
+            FROM sellers s
+            LEFT JOIN seller_access sa ON sa.tg_user_id = s.tg_user_id
             LEFT JOIN seller_credits sc ON sc.seller_id = s.id
-            LEFT JOIN (SELECT seller_id, COUNT(*) AS cnt FROM shops GROUP BY seller_id) sh ON sh.seller_id = s.id
             LEFT JOIN (
-              SELECT s2.tg_user_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
-              FROM sellers s2
-              LEFT JOIN shops sp2 ON sp2.seller_id = s2.id
-              LEFT JOIN campaigns c ON c.shop_id = sp2.id
-              GROUP BY s2.tg_user_id
-            ) cp ON cp.tg_user_id = sa.tg_user_id
+              SELECT seller_id, COUNT(*) AS cnt
+              FROM shops
+              GROUP BY seller_id
+            ) sh ON sh.seller_id = s.id
             LEFT JOIN (
-              SELECT s3.tg_user_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
-              FROM sellers s3
-              LEFT JOIN seller_credit_transactions t ON t.seller_id = s3.id
-              GROUP BY s3.tg_user_id
-            ) sp ON sp.tg_user_id = sa.tg_user_id
-            WHERE sa.tg_user_id=$1
+              SELECT sh2.seller_id, COUNT(c.*) AS cnt, MAX(c.created_at) AS last_campaign_at
+              FROM shops sh2
+              LEFT JOIN campaigns c ON c.shop_id = sh2.id
+              GROUP BY sh2.seller_id
+            ) cp ON cp.seller_id = s.id
+            LEFT JOIN (
+              SELECT t.seller_id, COALESCE(SUM(CASE WHEN t.delta < 0 THEN -t.delta ELSE 0 END), 0) AS spent
+              FROM seller_credit_transactions t
+              GROUP BY t.seller_id
+            ) sp ON sp.seller_id = s.id
+            WHERE s.tg_user_id=$1
             LIMIT 1;
             """,
             tg_user_id,

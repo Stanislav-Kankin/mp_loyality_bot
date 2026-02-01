@@ -30,14 +30,13 @@ def admin_main_menu() -> InlineKeyboardMarkup:
 def credits_packages_menu(*, back_cb: str = "seller:home", context: str | None = None) -> InlineKeyboardMarkup:
     """Packages screen for buying campaign credits.
 
-    Step B (test-mode): real payments will be implemented later; for now we expose a test button.
+    Payments will be connected later (YooKassa via Telegram Payments).
     """
     kb = InlineKeyboardBuilder()
     suffix = f":{context}" if context else ""
     kb.button(text="1 рассылка — 1000 ₽", callback_data=f"credits:pkg:1{suffix}")
     kb.button(text="3 рассылки — 2890 ₽", callback_data=f"credits:pkg:3{suffix}")
     kb.button(text="10 рассылок — 27500 ₽", callback_data=f"credits:pkg:10{suffix}")
-    kb.button(text="🧪 ТЕСТОВАЯ ПОКУПКА 3 РАССЫЛКИ", callback_data=f"credits:test:3{suffix}")
     kb.button(text="⬅️ Назад", callback_data=back_cb)
     kb.adjust(1)
     return kb.as_markup()
@@ -110,8 +109,6 @@ def campaign_actions(
     kb = InlineKeyboardBuilder()
     kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
     kb.button(text="💳 Оплатить", callback_data=f"campaign:pay:stub:{campaign_id}")
-    if show_test:
-        kb.button(text="✅ TEST: оплатить", callback_data=f"campaign:pay:test:{campaign_id}")
     if show_send:
         kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
     kb.button(text="⬅️ Назад", callback_data="campaigns:list")

@@ -905,29 +905,11 @@ async def campaign_pay_stub(cb: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:pay:test:"))
 async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if tg_id not in settings.admin_ids_set:
-        await cb.answer("Нет доступа", show_alert=True)
-        return
-    if not settings.payments_test_mode:
-        await cb.answer("TEST режим выключен", show_alert=True)
-        return
+    """Deprecated: test payment flow is disabled.
 
-    raw_id = cb.data.split(":")[-1]
-    if not raw_id.isdigit():
-        await cb.answer("Некорректный id", show_alert=True)
-        return
-    campaign_id = int(raw_id)
-
-    camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
-    if camp is None:
-        await cb.answer("Кампания не найдена", show_alert=True)
-        return
-
-    await mark_campaign_paid_test(pool, campaign_id=campaign_id)
-    await cb.message.answer(f"TEST оплата ✅\nКампания #{campaign_id} помечена как оплаченная.")
-    await cb.answer()
-
+    Kept to avoid crashes if old messages with callbacks are still around.
+    """
+    await cb.answer("Тестовая оплата отключена.", show_alert=True)
 
 @router.callback_query(F.data.startswith("campaign:send:"))
 async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:

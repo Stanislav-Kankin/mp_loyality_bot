@@ -129,8 +129,8 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     text = (
         "💰 Покупка рассылок\n"
         f"Текущий баланс: {credits}\n\n"
-        "Пока это тест-режим. Реальные оплаты пакетов добавим позже.\n"
-        "Для проверки можно нажать тестовую покупку."
+        "Оплата пакетов будет доступна после подключения ЮKassa (через Telegram Payments).\n"
+        "Пока кредиты может начислить администратор."
     )
     await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb=back_cb, context=ctx))
     await cb.answer()
@@ -138,33 +138,16 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("credits:pkg:"))
 async def credits_pkg_stub_cb(cb: CallbackQuery) -> None:
-    await cb.answer("Пока тест-режим. Используйте тестовую покупку (+3).", show_alert=True)
+    await cb.answer("Оплата пакетов будет доступна после подключения оплаты.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("credits:test:3"))
-async def credits_test_buy_3_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if not await _is_seller(pool, tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
+async def credits_test_buy_3_cb(cb: CallbackQuery) -> None:
+    """Deprecated: test purchase is disabled.
 
-    parts = (cb.data or "").split(":")
-    ctx = parts[3] if len(parts) >= 4 and parts[3] else None
-
-    back_cb = "seller:home"
-    if isinstance(ctx, str) and ctx.startswith("c") and ctx[1:].isdigit():
-        back_cb = f"campaign:open:{int(ctx[1:])}"
-
-    seller_id = await ensure_seller(pool, tg_id)
-    new_balance = await add_seller_credits(pool, seller_id=seller_id, delta=3, reason="test_package_3")
-
-    text = (
-        "✅ Тестовая покупка выполнена\n"
-        "Начислено: +3\n"
-        f"Новый баланс: {new_balance}"
-    )
-    await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb=back_cb, context=ctx))
-    await cb.answer()
+    Kept to avoid crashes if old messages with callbacks are still around.
+    """
+    await cb.answer("Тестовая покупка отключена.", show_alert=True)
 
 
 @router.callback_query(F.data == "seller:shops")
