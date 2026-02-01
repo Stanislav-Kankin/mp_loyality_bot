@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncpg
-from aiogram import F, Router
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -21,25 +22,40 @@ from loyalty_bot.db.repo import (
 router = Router()
 
 
-
-
-async def _safe_edit(cb: CallbackQuery, text: str, reply_markup) -> bool:
-    """Edit message safely. Returns True if edited, False if unchanged or no message."""
-    if not cb.message:
-        return False
-    try:
-        await cb.message.edit_text(text, reply_markup=reply_markup)
-        return True
-    except TelegramBadRequest as e:
-        # Happens when user presses the same button again (content is identical)
-        if "message is not modified" in str(e):
-            return False
-        raiseclass AdminAddSeller(StatesGroup):
+class AdminAddSeller(StatesGroup):
     tg_user_id = State()
 
 
 def _is_admin(tg_id: int) -> bool:
     return tg_id in settings.admin_ids_set
+
+
+async def _safe_edit(cb: CallbackQuery, text: str, reply_markup) -> None:
+    """Edit message text safely.
+
+    Telegram returns 'message is not modified' if text/markup are unchanged.
+    We silently ignore that case to avoid crashing on repeated button clicks.
+    """
+    if not cb.message:
+        return
+    try:
+        await cb.message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+
+def _format_user_label(*, tg_user_id: int, first_name: str | None, last_name: str | None, username: str | None) -> str:
+    name_parts: list[str] = []
+    if first_name:
+        name_parts.append(first_name)
+    if last_name:
+        name_parts.append(last_name)
+
+    name = " ".join(name_parts).strip() or str(tg_user_id)
+    if username:
+        name = f"{name} (@{username})"
+    return name
 
 
 def _admin_sellers_list_kb(*, page: int, items: list[dict], has_next: bool) -> InlineKeyboardBuilder:
@@ -50,9 +66,11 @@ def _admin_sellers_list_kb(*, page: int, items: list[dict], has_next: bool) -> I
         credits = int(it["credits"])
         shops_count = int(it["shops_count"])
         campaigns_count = int(it["campaigns_count"])
+        label = str(it.get("label") or tg_user_id)
+
         prefix = "✅" if active else "⛔️"
         kb.button(
-            text=f"{prefix} {tg_user_id} — {credits}кр — 🏪{shops_count} — 📣{campaigns_count}",
+            text=f"{prefix} {label} · кредиты {credits} · 🏪{shops_count} · 📣{campaigns_count}",
             callback_data=f"admin:seller:open:{tg_user_id}:{page}",
         )
 
@@ -100,13 +118,13 @@ async def admin_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"Суммарный баланс кредитов: {stats['credits_total']}\n"
     )
 
-    if cb.message:
-        await _safe_edit(cb, text, admin_main_menu())
+    await _safe_edit(cb, text, reply_markup=admin_main_menu())
+    # Явный фидбек: кнопка работает даже если текст не менялся.
     await cb.answer("Данные успешно обновлены")
 
 
 @router.callback_query(F.data.startswith("admin:sellers:page:"))
-async def admin_sellers_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+async def admin_sellers_list(cb: CallbackQuery, pool: asyncpg.Pool, bot: Bot) -> None:
     if not _is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -119,19 +137,32 @@ async def admin_sellers_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     items, has_next = await list_admin_sellers_page(pool, offset=page * 10, limit=10)
 
-    text = f"👥 Селлеры (страница {page+1})\n\n" + (
-        "Нет добавленных селлеров." if not items else "Выберите селлера:"
-    )
+    enriched: list[dict] = []
+    for it in items:
+        tg_user_id = int(it["tg_user_id"])
+        try:
+            chat = await bot.get_chat(tg_user_id)
+            label = _format_user_label(
+                tg_user_id=tg_user_id,
+                first_name=getattr(chat, "first_name", None),
+                last_name=getattr(chat, "last_name", None),
+                username=getattr(chat, "username", None),
+            )
+        except Exception:
+            label = str(tg_user_id)
 
-    kb = _admin_sellers_list_kb(page=page, items=items, has_next=has_next).as_markup()
+        it2 = dict(it)
+        it2["label"] = label
+        enriched.append(it2)
 
+    kb = _admin_sellers_list_kb(page=page, items=enriched, has_next=has_next).as_markup()
     if cb.message:
-        await _safe_edit(cb, text, kb)
+        await _safe_edit(cb, "👥 Селлеры (страница %d)\n\nВыберите селлера:" % (page + 1), reply_markup=kb)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("admin:seller:open:"))
-async def admin_seller_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+async def admin_seller_open(cb: CallbackQuery, pool: asyncpg.Pool, bot: Bot) -> None:
     if not _is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -155,12 +186,24 @@ async def admin_seller_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Селлер не найден", show_alert=True)
         return
 
+    try:
+        chat = await bot.get_chat(tg_user_id)
+        label = _format_user_label(
+            tg_user_id=tg_user_id,
+            first_name=getattr(chat, "first_name", None),
+            last_name=getattr(chat, "last_name", None),
+            username=getattr(chat, "username", None),
+        )
+    except Exception:
+        label = str(tg_user_id)
+
     active = bool(d["is_active"])
     last_campaign = d["last_campaign_at"]
     last_campaign_str = last_campaign.strftime("%Y-%m-%d %H:%M") if last_campaign else "—"
 
     text = (
-        f"👤 Селлер {tg_user_id}\n"
+        f"👤 Селлер: {label}\n"
+        f"Telegram ID: {tg_user_id}\n"
         f"Статус: {'активен' if active else 'выключен'}\n"
         f"Кредиты: {d['credits']}\n"
         f"Магазинов: {d['shops_count']}\n"
@@ -172,14 +215,12 @@ async def admin_seller_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         text += f"Заметка: {d['note']}\n"
 
     kb = _admin_seller_details_kb(tg_user_id=tg_user_id, is_active=active, back_page=back_page).as_markup()
-
-    if cb.message:
-        await _safe_edit(cb, text, kb)
+    await _safe_edit(cb, text, reply_markup=kb)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("admin:seller:toggle:"))
-async def admin_seller_toggle(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+async def admin_seller_toggle(cb: CallbackQuery, pool: asyncpg.Pool, bot: Bot) -> None:
     if not _is_admin(cb.from_user.id):
         await cb.answer("Нет доступа", show_alert=True)
         return
@@ -210,12 +251,24 @@ async def admin_seller_toggle(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Селлер не найден", show_alert=True)
         return
 
+    try:
+        chat = await bot.get_chat(tg_user_id)
+        label = _format_user_label(
+            tg_user_id=tg_user_id,
+            first_name=getattr(chat, "first_name", None),
+            last_name=getattr(chat, "last_name", None),
+            username=getattr(chat, "username", None),
+        )
+    except Exception:
+        label = str(tg_user_id)
+
     active = bool(d["is_active"])
     last_campaign = d["last_campaign_at"]
     last_campaign_str = last_campaign.strftime("%Y-%m-%d %H:%M") if last_campaign else "—"
 
     text = (
-        f"👤 Селлер {tg_user_id}\n"
+        f"👤 Селлер: {label}\n"
+        f"Telegram ID: {tg_user_id}\n"
         f"Статус: {'активен' if active else 'выключен'}\n"
         f"Кредиты: {d['credits']}\n"
         f"Магазинов: {d['shops_count']}\n"
@@ -227,10 +280,8 @@ async def admin_seller_toggle(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         text += f"Заметка: {d['note']}\n"
 
     kb = _admin_seller_details_kb(tg_user_id=tg_user_id, is_active=active, back_page=back_page).as_markup()
-    if cb.message:
-        await _safe_edit(cb, text, kb)
-
-    await cb.answer("Обновлено ✅", show_alert=True)
+    await _safe_edit(cb, text, reply_markup=kb)
+    await cb.answer("Обновлено ✅", show_alert=False)
 
 
 @router.callback_query(F.data == "admin:seller:add")
@@ -244,7 +295,7 @@ async def admin_seller_add_start(cb: CallbackQuery, state: FSMContext) -> None:
 
     await cb.message.answer(
         "Введите Telegram ID селлера (число).\n\n"
-        "Подсказка: селлер может прислать вам свой ID через @userinfobot.",
+        "Подсказка: селлер может узнать свой ID через @FIND_MY_ID_BOT.",
         reply_markup=cancel_kb("admin:home"),
     )
     await cb.answer()
@@ -289,7 +340,7 @@ async def admin_seller_add_finish(message: Message, state: FSMContext, pool: asy
 
     text = (
         "✅ Селлер добавлен\n\n"
-        f"👤 Селлер {tg_user_id}\n"
+        f"Telegram ID: {tg_user_id}\n"
         f"Статус: {'активен' if active else 'выключен'}\n"
         f"Кредиты: {d['credits']}\n"
         f"Магазинов: {d['shops_count']}\n"
