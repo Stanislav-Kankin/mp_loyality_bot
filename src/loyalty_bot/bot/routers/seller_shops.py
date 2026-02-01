@@ -347,7 +347,7 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"✅ Подписано: {stats['subscribed']}\n"
         f"🔕 Отписалось: {stats['unsubscribed']}\n"
         f"👥 Всего записей: {stats['total']}\n\n"
-        f"UTM/клики добавим на этапе рассылок."
+        f"Общая статистика."
     )
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder

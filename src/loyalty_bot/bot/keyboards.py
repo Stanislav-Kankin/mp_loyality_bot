@@ -68,7 +68,7 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
 
 def buyer_subscription_menu(shop_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔕 Отписаться", callback_data=f"buyer:unsub:{shop_id}")
+    kb.button(text="🚫 Отписаться", callback_data=f"buyer:unsub:{shop_id}")
     kb.adjust(1)
     return kb.as_markup()
 

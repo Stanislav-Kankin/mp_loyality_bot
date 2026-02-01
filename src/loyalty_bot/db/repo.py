@@ -204,6 +204,27 @@ async def subscribe_customer_to_shop(pool: asyncpg.Pool, shop_id: int, customer_
         )
 
 
+async def get_shop_customer_status(pool: asyncpg.Pool, *, shop_id: int, customer_id: int) -> str | None:
+    """Return shop subscription status for a customer.
+
+    Returns one of:
+      - 'subscribed'
+      - 'unsubscribed'
+      - None (no record)
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT status
+            FROM shop_customers
+            WHERE shop_id=$1 AND customer_id=$2;
+            """,
+            shop_id,
+            customer_id,
+        )
+        return str(row["status"]) if row else None
+
+
 async def unsubscribe_customer_from_shop(pool: asyncpg.Pool, shop_id: int, customer_id: int) -> None:
     async with pool.acquire() as conn:
         await conn.execute(

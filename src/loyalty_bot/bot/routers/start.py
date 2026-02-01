@@ -18,6 +18,7 @@ from loyalty_bot.db.repo import (
     is_seller_allowed,
     shop_exists,
     shop_is_active,
+    get_shop_customer_status,
     subscribe_customer_to_shop,
     unsubscribe_customer_from_shop,
     update_customer_profile,
@@ -92,6 +93,15 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
 
         customer = await get_customer(pool, tg_id)
         customer_id = int(customer["id"])
+
+        # UX: if already subscribed, don't spam resubscribe/welcome.
+        status = await get_shop_customer_status(pool, shop_id=shop_id, customer_id=customer_id)
+        if status == "subscribed":
+            await message.answer(
+                "Вы успешно подписаны на выгоду, приятного использования.",
+                reply_markup=buyer_subscription_menu(shop_id),
+            )
+            return
 
         await subscribe_customer_to_shop(pool, shop_id=shop_id, customer_id=customer_id)
 
