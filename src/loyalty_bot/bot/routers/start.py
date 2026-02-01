@@ -161,9 +161,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         b.adjust(1)
 
         await message.answer(
-            "Вы успешно подписаны на выгоду, приятного использования.
-
-"
+            "Вы успешно подписаны на выгоду, приятного использования."
             "Выберите магазин, чтобы отписаться:",
             reply_markup=b.as_markup(),
         )
