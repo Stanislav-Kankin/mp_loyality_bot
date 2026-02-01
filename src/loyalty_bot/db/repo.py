@@ -239,6 +239,27 @@ async def unsubscribe_customer_from_shop(pool: asyncpg.Pool, shop_id: int, custo
         )
 
 
+async def get_customer_subscribed_shops(pool: asyncpg.Pool, *, customer_id: int) -> list[dict[str, object]]:
+    """List shops where customer has active subscription.
+
+    Returns list of dicts: {shop_id:int, name:str}
+    Ordered by subscribed_at DESC.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT sc.shop_id, s.name
+            FROM shop_customers sc
+            JOIN shops s ON s.id = sc.shop_id
+            WHERE sc.customer_id = $1
+              AND sc.status = 'subscribed'
+            ORDER BY sc.subscribed_at DESC NULLS LAST, sc.shop_id DESC;
+            """,
+            customer_id,
+        )
+        return [{"shop_id": int(r["shop_id"]), "name": str(r["name"])} for r in rows]
+
+
 async def shop_exists(pool: asyncpg.Pool, shop_id: int) -> bool:
     """Exists check for any shop (active or disabled)."""
     async with pool.acquire() as conn:

@@ -23,6 +23,7 @@ from loyalty_bot.db.repo import (
     unsubscribe_customer_from_shop,
     update_customer_profile,
     get_shop_welcome,
+    get_customer_subscribed_shops,
 )
 
 router = Router()
@@ -137,6 +138,37 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
             reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
         )
         return
+
+
+    # Buyer repeat /start (no payload): if already subscribed, show quick unsubscribe.
+    customer = await get_customer(pool, tg_id)
+    customer_id = int(customer["id"])
+    subs = await get_customer_subscribed_shops(pool, customer_id=customer_id)
+    if subs:
+        if len(subs) == 1:
+            sid = int(subs[0]["shop_id"])
+            await message.answer(
+                "Вы успешно подписаны на выгоду, приятного использования.",
+                reply_markup=buyer_subscription_menu(sid),
+            )
+            return
+
+        b = InlineKeyboardBuilder()
+        for s in subs:
+            sid = int(s["shop_id"])
+            name = str(s["name"])
+            b.button(text=f"🚫 Отписаться от {name}", callback_data=f"buyer:unsub:{sid}")
+        b.adjust(1)
+
+        await message.answer(
+            "Вы успешно подписаны на выгоду, приятного использования.
+
+"
+            "Выберите магазин, чтобы отписаться:",
+            reply_markup=b.as_markup(),
+        )
+        return
+
 
     await message.answer(
         "Это бот лояльности магазина.\n\n"
