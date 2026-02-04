@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 import asyncpg
-from aiogram import F, Router
+from aiogram import F, Router, Bot
 from aiogram.types import PreCheckoutQuery, Message
 
 from loyalty_bot.config import settings
@@ -19,6 +19,35 @@ from loyalty_bot.db.repo import (
 router = Router()
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_answer_pre_checkout(bot: Bot, pre: PreCheckoutQuery, *, ok: bool, error_message: str | None = None) -> None:
+    """Answer pre_checkout_query with explicit bot call + logs.
+
+    Telegram shows "time expired" if bot doesn't answer in time or if API call fails.
+    We log both success and exception to make тест оплаты debuggable.
+    """
+    try:
+        await bot.answer_pre_checkout_query(pre.id, ok=ok, error_message=error_message)
+        logger.info(
+            "pre_checkout answered ok=%s tg_id=%s amount=%s currency=%s payload=%s", 
+            ok,
+            pre.from_user.id,
+            pre.total_amount,
+            pre.currency,
+            pre.invoice_payload,
+        )
+    except Exception:
+        logger.exception(
+            "pre_checkout answer FAILED ok=%s tg_id=%s amount=%s currency=%s payload=%s", 
+            ok,
+            pre.from_user.id,
+            pre.total_amount,
+            pre.currency,
+            pre.invoice_payload,
+        )
+        # Re-raise so aiogram logs it too (and we see it in docker logs).
+        raise
 
 
 def _parse_invoice_payload(payload: str) -> dict | None:
@@ -51,12 +80,18 @@ def _parse_invoice_payload(payload: str) -> dict | None:
 
 
 @router.pre_checkout_query()
-async def pre_checkout(pre: PreCheckoutQuery, pool: asyncpg.Pool) -> None:
+async def pre_checkout(pre: PreCheckoutQuery, pool: asyncpg.Pool, bot: Bot) -> None:
     tg_id = pre.from_user.id
     info = _parse_invoice_payload(pre.invoice_payload)
     if info is None:
         logger.info("pre_checkout invalid payload tg_id=%s payload=%s", tg_id, pre.invoice_payload)
-        await pre.answer(ok=False, error_message="Некорректный платеж. Попробуйте снова.")
+        # Answer via explicit bot call to avoid context issues in polling.
+        await _safe_answer_pre_checkout(
+            bot,
+            pre,
+            ok=False,
+            error_message="Некорректный платеж. Попробуйте снова.",
+        )
         return
 
     logger.info(
@@ -76,9 +111,14 @@ async def pre_checkout(pre: PreCheckoutQuery, pool: asyncpg.Pool) -> None:
             10: settings.credits_pack_10_minor,
         }[qty]
         if pre.currency != settings.currency or pre.total_amount != int(expected_minor):
-            await pre.answer(ok=False, error_message="Сумма/валюта не совпадают. Пересоздайте оплату.")
+            await _safe_answer_pre_checkout(
+                bot,
+                pre,
+                ok=False,
+                error_message="Сумма/валюта не совпадают. Пересоздайте оплату.",
+            )
             return
-        await pre.answer(ok=True)
+        await _safe_answer_pre_checkout(bot, pre, ok=True)
         return
 
     # --- campaign payment (legacy, if used) ---
@@ -86,20 +126,30 @@ async def pre_checkout(pre: PreCheckoutQuery, pool: asyncpg.Pool) -> None:
 
     camp = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=campaign_id)
     if camp is None:
-        await pre.answer(ok=False, error_message="Кампания не найдена.")
+        await _safe_answer_pre_checkout(bot, pre, ok=False, error_message="Кампания не найдена.")
         return
 
     # Validate amount & currency
     if pre.total_amount != int(camp["price_minor"]) or pre.currency != str(camp["currency"]):
-        await pre.answer(ok=False, error_message="Сумма/валюта не совпадают. Пересоздайте оплату.")
+        await _safe_answer_pre_checkout(
+            bot,
+            pre,
+            ok=False,
+            error_message="Сумма/валюта не совпадают. Пересоздайте оплату.",
+        )
         return
 
     # For MVP: allow payment only for draft status
     if str(camp["status"]) not in ("draft", "unpaid"):
-        await pre.answer(ok=False, error_message="Эта кампания уже оплачена или недоступна.")
+        await _safe_answer_pre_checkout(
+            bot,
+            pre,
+            ok=False,
+            error_message="Эта кампания уже оплачена или недоступна.",
+        )
         return
 
-    await pre.answer(ok=True)
+    await _safe_answer_pre_checkout(bot, pre, ok=True)
 
 
 @router.message(F.successful_payment)
