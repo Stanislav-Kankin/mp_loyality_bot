@@ -76,7 +76,6 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
 def buyer_subscription_menu(shop_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🚫 Отписаться", callback_data=f"buyer:unsub:{shop_id}")
-    kb.button(text="📋 Мои подписки", callback_data="buyer:subs")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -128,17 +127,33 @@ def campaign_card_actions(
     campaign_id: int,
     *,
     credits: int,
+    status: str | None = None,
     back_cb: str = "campaigns:list",
 ) -> InlineKeyboardMarkup:
     """Actions for campaign card.
 
     Step D: simplified card UI + credits.
+    status is optional for backward-compatibility.
     """
+    st = (status or "").lower().strip()
+
     kb = InlineKeyboardBuilder()
     kb.button(text="👁 Пример сообщения", callback_data=f"campaign:preview:{campaign_id}")
-    kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
+
+    # Draft: allow editing before sending
+    if st in ("draft", ""):
+        kb.button(text="✏️ Редактировать", callback_data=f"campaign:edit:{campaign_id}")
+        kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
+    # Sent/completed: allow resend as new campaign
+    elif st in ("sent", "completed", "done"):
+        kb.button(text="🔁 Отправить повторно", callback_data=f"campaign:resend:{campaign_id}")
+    else:
+        # Default: keep send action
+        kb.button(text="🚀 Запустить рассылку", callback_data=f"campaign:send:{campaign_id}")
+
     if credits <= 0:
         kb.button(text="💰 Купить рассылки", callback_data=f"credits:menu:c{campaign_id}")
+
     kb.button(text="⬅️ Назад", callback_data=back_cb)
     kb.adjust(1)
     return kb.as_markup()
