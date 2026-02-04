@@ -161,8 +161,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         b.adjust(1)
 
         await message.answer(
-            "Вы успешно подписаны на выгоду, приятного использования."
-            "Выберите магазин, чтобы отписаться:",
+            "Вы успешно подписаны на выгоду, приятного использования.\n\nВыберите магазин, чтобы отписаться:",
             reply_markup=b.as_markup(),
         )
         return
@@ -229,6 +228,28 @@ async def buyer_onboarding_gender(cb: CallbackQuery, state: FSMContext, pool: as
 
     await _send_shop_welcome(cb.message, pool, shop_id)
 
+    await cb.answer()
+
+
+@router.callback_query(F.data == "buyer:subs")
+async def buyer_subscriptions_list_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    customer = await get_customer(pool, tg_id)
+    customer_id = int(customer["id"])
+    subs = await get_customer_subscribed_shops(pool, customer_id=customer_id)
+    if not subs:
+        await cb.message.answer("У вас нет активных подписок.")
+        await cb.answer()
+        return
+
+    b = InlineKeyboardBuilder()
+    for s in subs:
+        sid = int(s["shop_id"])
+        name = str(s["name"])
+        b.button(text=f"🚫 Отписаться от {name}", callback_data=f"buyer:unsub:{sid}")
+    b.adjust(1)
+
+    await cb.message.answer("Ваши подписки:\nВыберите магазин, чтобы отписаться:", reply_markup=b.as_markup())
     await cb.answer()
 
 

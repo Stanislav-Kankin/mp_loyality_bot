@@ -26,8 +26,6 @@ from loyalty_bot.db.repo import (
     mark_delivery_failed,
     reschedule_delivery,
     finalize_completed_campaigns,
-    get_shop_seller_tg_user_id,
-    get_shop_audience_counts,
 )
 from loyalty_bot.logging_setup import setup_logging
 
@@ -51,10 +49,20 @@ def _build_campaign_kb(*, url: str, button_title: str) -> InlineKeyboardBuilder:
     return kb
 
 
+
+def _format_delivery_text(*, shop_name: str, text: str) -> str:
+    sn = (shop_name or "").strip()
+    if not sn:
+        return text or ""
+    prefix = f"🏷 Магазин: {sn}\n\n"
+    return prefix + (text or "")
+
+
 async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
     delivery_id = int(item["delivery_id"])
     campaign_id = int(item["campaign_id"])
     tg_user_id = int(item["tg_user_id"])
+    shop_name = str(item.get("shop_name") or "").strip()
     text = str(item.get("text") or "")
     button_title = str(item.get("button_title") or "")
     url = str(item.get("url") or "")
@@ -62,19 +70,20 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
     attempt = int(item.get("attempt") or 1)
 
     try:
+        formatted = _format_delivery_text(shop_name=shop_name, text=text)
         if photo_file_id:
             msg = await bot.send_photo(
                 chat_id=tg_user_id,
                 photo=str(photo_file_id),
-                caption=text[:1024] if text else None,
+                caption=formatted[:1024] if formatted else None,
                 reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
             )
-            if len(text) > 1024:
-                await bot.send_message(chat_id=tg_user_id, text=text[1024:], disable_web_page_preview=True)
+            if formatted and len(formatted) > 1024:
+                await bot.send_message(chat_id=tg_user_id, text=formatted[1024:], disable_web_page_preview=True)
         else:
             msg = await bot.send_message(
                 chat_id=tg_user_id,
-                text=text,
+                text=formatted,
                 reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
                 disable_web_page_preview=True,
             )
@@ -132,8 +141,7 @@ async def main() -> None:
             items = await lease_due_deliveries(pool, batch_size=int(settings.send_batch_size))
             if not items:
                 # Still try to finalize campaigns periodically.
-                completed = await finalize_completed_campaigns(pool)
-                await _notify_completed_campaigns(bot, pool, completed)
+                await finalize_completed_campaigns(pool)
                 await asyncio.sleep(float(settings.send_tick_seconds))
                 continue
 
@@ -141,66 +149,11 @@ async def main() -> None:
                 await _process_delivery(bot, pool, item)
                 await asyncio.sleep(min_delay)
 
-            completed = await finalize_completed_campaigns(pool)
-            await _notify_completed_campaigns(bot, pool, completed)
+            await finalize_completed_campaigns(pool)
 
     finally:
         await bot.session.close()
         await pool.close()
-
-
-async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool, completed: list[dict]) -> None:
-    if not completed:
-        return
-
-    for camp in completed:
-        try:
-            campaign_id = int(camp["id"])
-            shop_id = int(camp["shop_id"])
-            seller_tg = await get_shop_seller_tg_user_id(pool, shop_id=shop_id)
-            if seller_tg is None:
-                logger.info("Completed campaign %s: seller not found for shop_id=%s", campaign_id, shop_id)
-                continue
-
-            total = int(camp.get("total_recipients") or 0)
-            sent = int(camp.get("sent_count") or 0)
-            failed = int(camp.get("failed_count") or 0)
-            blocked = int(camp.get("blocked_count") or 0)
-            not_delivered = max(0, total - sent)
-
-            audience = await get_shop_audience_counts(pool, shop_id=shop_id)
-            base_total = int(audience.get("total") or 0)
-            base_active = int(audience.get("subscribed") or 0)
-            base_unsub = int(audience.get("unsubscribed") or 0)
-
-            text = (
-                f"✅ Рассылка #{campaign_id} завершена\n\n"
-                f"👥 Получателей в рассылке: {total}\n"
-                f"✅ Доставлено: {sent}\n"
-                f"❌ Ошибки: {failed}\n"
-                f"⛔ Заблокировали: {blocked}\n"
-                f"📭 Не доставлено: {not_delivered}\n\n"
-                f"📦 База магазина:\n"
-                f"— всего записей: {base_total}\n"
-                f"— активные (подписаны): {base_active}\n"
-                f"— отписанные: {base_unsub}"
-            )
-
-            await bot.send_message(chat_id=int(seller_tg), text=text)
-            logger.info(
-                "campaign_completed_notified campaign_id=%s seller_tg=%s total=%s sent=%s failed=%s blocked=%s base_total=%s base_active=%s base_unsub=%s",
-                campaign_id,
-                seller_tg,
-                total,
-                sent,
-                failed,
-                blocked,
-                base_total,
-                base_active,
-                base_unsub,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to notify completed campaign: %s", e)
 
 
 if __name__ == "__main__":

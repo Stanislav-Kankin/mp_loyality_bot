@@ -913,59 +913,6 @@ async def start_campaign_sending(
             return total_i
 
 
-async def clone_campaign_for_resend(
-    pool: asyncpg.Pool,
-    *,
-    seller_tg_user_id: int,
-    source_campaign_id: int,
-) -> int:
-    """Create a new draft campaign by copying an existing one.
-
-    Used for 'send again' feature. The new campaign belongs to the same shop.
-    """
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            src = await conn.fetchrow(
-                """
-                SELECT
-                    c.shop_id,
-                    c.text,
-                    c.button_title,
-                    c.url,
-                    c.price_minor,
-                    c.currency,
-                    c.photo_file_id
-                FROM campaigns c
-                JOIN shops sh ON sh.id = c.shop_id
-                JOIN sellers s ON s.id = sh.seller_id
-                WHERE c.id=$2 AND s.tg_user_id=$1;
-                """,
-                int(seller_tg_user_id),
-                int(source_campaign_id),
-            )
-            if src is None:
-                raise ValueError("campaign_not_found")
-
-            new_id = await conn.fetchval(
-                """
-                INSERT INTO campaigns(
-                    shop_id, status, created_at, text, button_title, url,
-                    price_minor, currency, photo_file_id
-                )
-                VALUES ($1, 'draft', now(), $2, $3, $4, $5, $6, $7)
-                RETURNING id;
-                """,
-                int(src["shop_id"]),
-                str(src["text"]),
-                src["button_title"],
-                src["url"],
-                int(src["price_minor"]),
-                str(src["currency"]),
-                src["photo_file_id"],
-            )
-            return int(new_id)
-
-
 async def lease_due_deliveries(
     pool: asyncpg.Pool,
     *,
@@ -989,12 +936,14 @@ async def lease_due_deliveries(
                        d.customer_id,
                        d.attempt_count,
                        cu.tg_user_id AS tg_user_id,
+                       s.name AS shop_name,
                        c.text,
                        c.button_title,
                        c.url,
                        c.photo_file_id
                 FROM campaign_deliveries d
                 JOIN campaigns c ON c.id = d.campaign_id
+                JOIN shops s ON s.id = c.shop_id
                 JOIN customers cu ON cu.id = d.customer_id
                 WHERE d.status='pending'
                   AND d.next_attempt_at <= now()
@@ -1028,6 +977,7 @@ async def lease_due_deliveries(
                     "customer_id": int(r["customer_id"]),
                     "attempt": int(r["attempt_count"] or 0) + 1,
                     "tg_user_id": int(r["tg_user_id"]),
+                    "shop_name": str(r.get("shop_name") or ""),
                     "text": str(r["text"]),
                     "button_title": str(r["button_title"] or ""),
                     "url": str(r["url"] or ""),
@@ -1132,13 +1082,10 @@ async def reschedule_delivery(
         )
 
 
-async def finalize_completed_campaigns(pool: asyncpg.Pool) -> list[dict]:
-    """Mark campaigns as completed when they have no pending deliveries left.
-
-    Returns a list of completed campaigns with fields needed for notifications.
-    """
+async def finalize_completed_campaigns(pool: asyncpg.Pool) -> int:
+    """Mark campaigns as completed when they have no pending deliveries left."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        row = await conn.fetchval(
             """
             WITH candidates AS (
                 SELECT c.id
@@ -1154,65 +1101,10 @@ async def finalize_completed_campaigns(pool: asyncpg.Pool) -> list[dict]:
             SET status='completed'
             FROM candidates
             WHERE c.id=candidates.id
-            RETURNING
-                c.id,
-                c.shop_id,
-                c.total_recipients,
-                c.sent_count,
-                c.failed_count,
-                c.blocked_count,
-                c.click_count;
+            RETURNING (SELECT COUNT(*) FROM candidates);
             """,
         )
-        return [dict(r) for r in rows]
-
-
-async def get_seller_tg_id_by_id(pool: asyncpg.Pool, *, seller_id: int) -> int | None:
-    """Return seller tg_user_id by internal seller_id."""
-    async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            "SELECT tg_user_id FROM sellers WHERE id=$1;",
-            int(seller_id),
-        )
-        return int(val) if val is not None else None
-
-
-
-async def get_shop_seller_tg_user_id(pool: asyncpg.Pool, *, shop_id: int) -> int | None:
-    """Return seller tg_user_id for a given shop."""
-    async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            """
-            SELECT s.tg_user_id
-            FROM shops sh
-            JOIN sellers s ON s.id = sh.seller_id
-            WHERE sh.id=$1;
-            """,
-            int(shop_id),
-        )
-        return int(val) if val is not None else None
-
-
-async def get_shop_audience_counts(pool: asyncpg.Pool, *, shop_id: int) -> dict:
-    """Return audience counts for a shop.
-
-    Keys: total, subscribed, unsubscribed.
-    """
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT
-                COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE status='subscribed')::int AS subscribed,
-                COUNT(*) FILTER (WHERE status='unsubscribed')::int AS unsubscribed
-            FROM shop_customers
-            WHERE shop_id=$1;
-            """,
-            int(shop_id),
-        )
-        if row is None:
-            return {"total": 0, "subscribed": 0, "unsubscribed": 0}
-        return dict(row)
+        return int(row or 0)
 
 
 async def record_campaign_click(
