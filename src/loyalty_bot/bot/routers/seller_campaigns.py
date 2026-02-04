@@ -59,13 +59,35 @@ def _campaign_card_text(camp: dict, *, credits: int) -> str:
     if len(preview) > 350:
         preview = preview[:350] + "…"
 
+    status_lbl = _status_label(str(camp.get('status') or ''))
+    total = int(camp.get('total_recipients') or 0)
+    sent = int(camp.get('sent_count') or 0)
+    failed = int(camp.get('failed_count') or 0)
+    blocked = int(camp.get('blocked_count') or 0)
+    clicks = int(camp.get('click_count') or 0)
+    not_sent = max(total - sent, 0)
+
+    stats_block = ''
+    if any([total, sent, failed, blocked, clicks]):
+        stats_block = (
+            f"\n\n<b>Статистика:</b>\n"
+            f"👥 Всего получателей: {total}\n"
+            f"✅ Доставлено: {sent}\n"
+            f"❌ Ошибки: {failed}\n"
+            f"⛔ Заблокировали: {blocked}\n"
+            f"📭 Не доставлено: {not_sent}\n"
+            f"👆 Клики (нажатия): {clicks}"
+        )
+
     return (
         f"Рассылка №{camp['id']}\n"
         f"<b>Доступно рассылок:</b> {credits}\n"
+        f"<b>Статус:</b> {html.escape(status_lbl)}\n"
         f"<b>Магазин:</b> {html.escape(str(camp.get('shop_name','')))}\n"
         f"<b>Создана:</b> {_format_dt(camp.get('created_at'))}\n\n"
         f"<b>Текст:</b>\n{html.escape(preview)}\n\n"
-        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}"
+        f"<b>Кнопка:</b> {html.escape(str(camp.get('button_title') or ''))}\n"
+        f"{stats_block}"
     )
 
 

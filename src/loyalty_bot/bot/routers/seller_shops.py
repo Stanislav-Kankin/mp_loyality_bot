@@ -29,7 +29,7 @@ from loyalty_bot.db.repo import (
     is_seller_allowed,
     get_shop_for_seller,
     get_shop_welcome,
-    get_shop_subscription_stats,
+    get_shop_audience_stats,
     list_seller_shops,
     update_shop_welcome,
 )
@@ -388,15 +388,33 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
-    stats = await get_shop_subscription_stats(pool, shop_id)
-    text = (
-        f"📊 Подписчики магазина\n\n"
-        f"🏪 {shop['name']} (#{shop_id})\n\n"
-        f"✅ Подписано: {stats['subscribed']}\n"
-        f"🔕 Отписалось: {stats['unsubscribed']}\n"
-        f"👥 Всего записей: {stats['total']}\n\n"
-        f"Общая статистика."
-    )
+    stats = await get_shop_audience_stats(pool, shop_id)
+    gender_unknown = int(stats.get("gender_u", 0)) + int(stats.get("gender_unknown", 0))
+
+
+    text_msg = f"""📊 Подписчики магазина
+
+🏪 {shop['name']} (#{shop_id})
+
+👥 Всего записей: {stats['total']}
+✅ Активные: {stats['subscribed']}
+🔕 Отписанные: {stats['unsubscribed']}
+
+👤 Пол (среди активных):
+  👨 Муж: {stats['gender_m']}
+  👩 Жен: {stats['gender_f']}
+  🤷 Не указан: {gender_unknown}
+
+🎂 Возраст (среди активных):
+  ≤17: {stats['age_u17']}
+  18–27: {stats['age_18_27']}
+  28–35: {stats['age_28_35']}
+  36–45: {stats['age_36_45']}
+  46–49: {stats['age_46_49']}
+  50+: {stats['age_50_plus']}
+  Не указан: {stats['age_unknown']}
+
+ℹ️ Пол/возраст считаются среди активных (подписанных)."""
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -404,9 +422,8 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
     kb.adjust(1)
 
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.message.edit_text(text_msg, reply_markup=kb.as_markup())
     await cb.answer()
-
 
 
 @router.callback_query(F.data.startswith("shop:welcome:"))

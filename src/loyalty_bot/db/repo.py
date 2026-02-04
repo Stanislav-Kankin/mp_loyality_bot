@@ -466,6 +466,59 @@ async def get_shop_subscription_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
         }
 
 
+async def get_shop_audience_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
+    """Audience stats for a shop.
+
+    Returns counts for:
+    - total/subscribed/unsubscribed
+    - gender breakdown (among subscribed)
+    - age buckets (among subscribed)
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE sc.status='subscribed') AS subscribed,
+                COUNT(*) FILTER (WHERE sc.status='unsubscribed') AS unsubscribed,
+
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.gender='m') AS gender_m,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.gender='f') AS gender_f,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.gender='u') AS gender_u,
+                COUNT(*) FILTER (
+                    WHERE sc.status='subscribed' AND (cu.gender IS NULL OR cu.gender NOT IN ('m','f','u'))
+                ) AS gender_unknown,
+
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years IS NOT NULL AND cu.full_years <= 17) AS age_u17,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years BETWEEN 18 AND 27) AS age_18_27,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years BETWEEN 28 AND 35) AS age_28_35,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years BETWEEN 36 AND 45) AS age_36_45,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years BETWEEN 46 AND 49) AS age_46_49,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years >= 50) AS age_50_plus,
+                COUNT(*) FILTER (WHERE sc.status='subscribed' AND cu.full_years IS NULL) AS age_unknown
+            FROM shop_customers sc
+            JOIN customers cu ON cu.id = sc.customer_id
+            WHERE sc.shop_id=$1;
+            """,
+            shop_id,
+        )
+        return {
+            'total': int(row['total'] or 0),
+            'subscribed': int(row['subscribed'] or 0),
+            'unsubscribed': int(row['unsubscribed'] or 0),
+            'gender_m': int(row['gender_m'] or 0),
+            'gender_f': int(row['gender_f'] or 0),
+            'gender_u': int(row['gender_u'] or 0),
+            'gender_unknown': int(row['gender_unknown'] or 0),
+            'age_u17': int(row['age_u17'] or 0),
+            'age_18_27': int(row['age_18_27'] or 0),
+            'age_28_35': int(row['age_28_35'] or 0),
+            'age_36_45': int(row['age_36_45'] or 0),
+            'age_46_49': int(row['age_46_49'] or 0),
+            'age_50_plus': int(row['age_50_plus'] or 0),
+            'age_unknown': int(row['age_unknown'] or 0),
+        }
+
 # Admin helpers (used by admin shop actions in shop card)
 
 
@@ -745,7 +798,8 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
         r = await conn.fetchrow(
             """
             SELECT c.id, c.shop_id, sh.name AS shop_name,
-                   c.status, c.created_at, c.text, c.button_title, c.url, c.photo_file_id, c.price_minor, c.currency
+                   c.status, c.created_at, c.text, c.button_title, c.url, c.photo_file_id, c.price_minor, c.currency,
+                   c.total_recipients, c.sent_count, c.failed_count, c.blocked_count, c.click_count
             FROM campaigns c
             JOIN shops sh ON sh.id = c.shop_id
             JOIN sellers s ON s.id = sh.seller_id
@@ -768,6 +822,11 @@ async def get_campaign_for_seller(pool: asyncpg.Pool, *, seller_tg_user_id: int,
             "photo_file_id": str(r["photo_file_id"] or "") or None,
             "price_minor": int(r["price_minor"]),
             "currency": str(r["currency"]),
+            "total_recipients": int(r["total_recipients"] or 0),
+            "sent_count": int(r["sent_count"] or 0),
+            "failed_count": int(r["failed_count"] or 0),
+            "blocked_count": int(r["blocked_count"] or 0),
+            "click_count": int(r["click_count"] or 0),
         }
 
 
