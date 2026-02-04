@@ -3,6 +3,8 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from loyalty_bot.config import settings
+
 
 def seller_main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
@@ -30,13 +32,18 @@ def admin_main_menu() -> InlineKeyboardMarkup:
 def credits_packages_menu(*, back_cb: str = "seller:home", context: str | None = None) -> InlineKeyboardMarkup:
     """Packages screen for buying campaign credits.
 
-    Payments will be connected later (YooKassa via Telegram Payments).
+    Payment is done via Telegram Payments (YooKassa provider token).
     """
+
+    def _fmt_rub(amount_minor: int) -> str:
+        rub = int(amount_minor) // 100
+        return f"{rub:,}".replace(",", " ")
+
     kb = InlineKeyboardBuilder()
     suffix = f":{context}" if context else ""
-    kb.button(text="1 рассылка — 1000 ₽", callback_data=f"credits:pkg:1{suffix}")
-    kb.button(text="3 рассылки — 2890 ₽", callback_data=f"credits:pkg:3{suffix}")
-    kb.button(text="10 рассылок — 27500 ₽", callback_data=f"credits:pkg:10{suffix}")
+    kb.button(text=f"1 рассылка — {_fmt_rub(settings.credits_pack_1_minor)} ₽", callback_data=f"credits:pkg:1{suffix}")
+    kb.button(text=f"3 рассылки — {_fmt_rub(settings.credits_pack_3_minor)} ₽", callback_data=f"credits:pkg:3{suffix}")
+    kb.button(text=f"10 рассылок — {_fmt_rub(settings.credits_pack_10_minor)} ₽", callback_data=f"credits:pkg:10{suffix}")
     kb.button(text="⬅️ Назад", callback_data=back_cb)
     kb.adjust(1)
     return kb.as_markup()

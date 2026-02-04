@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     price_per_campaign_minor: int = 9900
     currency: str = "RUB"
 
+    # Credits packs (campaign slots). Amounts are in minor units (kopeks).
+    credits_pack_1_minor: int = 100_000
+    credits_pack_3_minor: int = 289_000
+    credits_pack_10_minor: int = 2_750_000
+
     send_batch_size: int = 50
     send_tick_seconds: int = 1
     tg_global_rate_per_sec: int = 25

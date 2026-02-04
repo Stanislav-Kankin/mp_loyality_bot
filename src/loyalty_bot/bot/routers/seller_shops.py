@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import asyncpg
 from aiogram import F, Router
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message, LabeledPrice
 
 from loyalty_bot.config import settings
 from loyalty_bot.bot.keyboards import (
@@ -34,6 +35,8 @@ from loyalty_bot.db.repo import (
 )
 
 router = Router()
+
+logger = logging.getLogger(__name__)
 
 
 class ShopCreate(StatesGroup):
@@ -129,16 +132,61 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     text = (
         "💰 Покупка рассылок\n"
         f"Текущий баланс: {credits}\n\n"
-        "Оплата пакетов будет доступна после подключения ЮKassa (через Telegram Payments).\n"
-        "Пока кредиты может начислить администратор."
+        "Выберите пакет и оплатите через Telegram Payments (ЮKassa)."
     )
     await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb=back_cb, context=ctx))
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("credits:pkg:"))
-async def credits_pkg_stub_cb(cb: CallbackQuery) -> None:
-    await cb.answer("Оплата пакетов будет доступна после подключения оплаты.", show_alert=True)
+async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    """Start credits pack payment by sending Telegram invoice."""
+    tg_id = cb.from_user.id
+    if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    parts = (cb.data or "").split(":")
+    # expected: credits:pkg:<qty>[:ctx]
+    if len(parts) < 3 or not parts[2].isdigit():
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+
+    qty = int(parts[2])
+    ctx = parts[3] if len(parts) >= 4 and parts[3] else None
+    if qty not in (1, 3, 10):
+        await cb.answer("Некорректный пакет", show_alert=True)
+        return
+
+    amount_minor_map = {
+        1: settings.credits_pack_1_minor,
+        3: settings.credits_pack_3_minor,
+        10: settings.credits_pack_10_minor,
+    }
+    amount_minor = int(amount_minor_map[qty])
+
+    title = f"Пакет рассылок: {qty}"
+    description = f"Покупка пакета на {qty} рассылок."
+    payload = f"credits_pack:{qty}" + (f":{ctx}" if ctx else "")
+
+    logger.info(
+        "send_invoice credits_pack qty=%s amount_minor=%s tg_id=%s payload=%s",
+        qty,
+        amount_minor,
+        tg_id,
+        payload,
+    )
+
+    await cb.bot.send_invoice(
+        chat_id=tg_id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token=settings.payment_provider_token,
+        currency=settings.currency,
+        prices=[LabeledPrice(label=title, amount=amount_minor)],
+    )
+    await cb.answer("Счет выставлен. Проверьте сообщение с оплатой 👇")
 
 
 @router.callback_query(F.data.startswith("credits:test:3"))

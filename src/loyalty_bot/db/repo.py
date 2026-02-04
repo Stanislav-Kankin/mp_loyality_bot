@@ -129,6 +129,32 @@ async def add_seller_credits(
             return new_balance
 
 
+async def has_seller_credit_tx_by_tg_charge_id(
+    pool: asyncpg.Pool,
+    *,
+    seller_id: int,
+    tg_payment_charge_id: str | None,
+) -> bool:
+    """Return True if a seller_credit_transactions row exists for this Telegram charge id.
+
+    Used for idempotency: Telegram can re-deliver successful_payment updates.
+    """
+    if not tg_payment_charge_id:
+        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1
+            FROM seller_credit_transactions
+            WHERE seller_id=$1 AND tg_payment_charge_id=$2
+            LIMIT 1;
+            """,
+            seller_id,
+            tg_payment_charge_id,
+        )
+        return row is not None
+
+
 # ------------------------
 # Customers
 # ------------------------
