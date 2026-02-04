@@ -389,30 +389,42 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         return
 
     stats = await get_shop_audience_counts(pool, shop_id)
-    gender_unknown = int(stats.get("gender_u", 0)) + int(stats.get("gender_unknown", 0))
+    gender = stats.get("gender") or {}
+    age = stats.get("age") or {}
+    g_male = int(gender.get("male", 0))
+    g_female = int(gender.get("female", 0))
+    g_unknown = int(gender.get("unknown", 0))
+
+    a_0_17 = int(age.get("0_17", 0))
+    a_18_27 = int(age.get("18_27", 0))
+    a_28_35 = int(age.get("28_35", 0))
+    a_36_45 = int(age.get("36_45", 0))
+    a_46_49 = int(age.get("46_49", 0))
+    a_50_plus = int(age.get("50_plus", 0))
+    a_unknown = int(age.get("unknown", 0))
 
 
     text_msg = f"""📊 Подписчики магазина
 
 🏪 {shop['name']} (#{shop_id})
 
-👥 Всего записей: {stats['total']}
-✅ Активные: {stats['subscribed']}
-🔕 Отписанные: {stats['unsubscribed']}
+👥 Всего записей: {int(stats.get('total', 0))}
+✅ Активные: {int(stats.get('subscribed', 0))}
+🔕 Отписанные: {int(stats.get('unsubscribed', 0))}
 
 👤 Пол (среди активных):
-  👨 Муж: {stats['gender_m']}
-  👩 Жен: {stats['gender_f']}
-  🤷 Не указан: {gender_unknown}
+  👨 Муж: {g_male}
+  👩 Жен: {g_female}
+  🤷 Не указан: {g_unknown}
 
 🎂 Возраст (среди активных):
-  ≤17: {stats['age_u17']}
-  18–27: {stats['age_18_27']}
-  28–35: {stats['age_28_35']}
-  36–45: {stats['age_36_45']}
-  46–49: {stats['age_46_49']}
-  50+: {stats['age_50_plus']}
-  Не указан: {stats['age_unknown']}
+  ≤17: {a_0_17}
+  18–27: {a_18_27}
+  28–35: {a_28_35}
+  36–45: {a_36_45}
+  46–49: {a_46_49}
+  50+: {a_50_plus}
+  Не указан: {a_unknown}
 
 ℹ️ Пол/возраст считаются среди активных (подписанных)."""
 
