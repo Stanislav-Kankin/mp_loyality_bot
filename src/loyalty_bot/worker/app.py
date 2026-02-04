@@ -166,7 +166,6 @@ async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool, completed: l
             sent = int(camp.get("sent_count") or 0)
             failed = int(camp.get("failed_count") or 0)
             blocked = int(camp.get("blocked_count") or 0)
-            clicks = int(camp.get("click_count") or 0)
             not_delivered = max(0, total - sent)
 
             audience = await get_shop_audience_counts(pool, shop_id=shop_id)
@@ -180,8 +179,7 @@ async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool, completed: l
                 f"✅ Доставлено: {sent}\n"
                 f"❌ Ошибки: {failed}\n"
                 f"⛔ Заблокировали: {blocked}\n"
-                f"📭 Не доставлено: {not_delivered}\n"
-                f"👆 Клики (нажатия): {clicks}\n\n"
+                f"📭 Не доставлено: {not_delivered}\n\n"
                 f"📦 База магазина:\n"
                 f"— всего записей: {base_total}\n"
                 f"— активные (подписаны): {base_active}\n"
@@ -190,14 +188,13 @@ async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool, completed: l
 
             await bot.send_message(chat_id=int(seller_tg), text=text)
             logger.info(
-                "campaign_completed_notified campaign_id=%s seller_tg=%s total=%s sent=%s failed=%s blocked=%s clicks=%s base_total=%s base_active=%s base_unsub=%s",
+                "campaign_completed_notified campaign_id=%s seller_tg=%s total=%s sent=%s failed=%s blocked=%s base_total=%s base_active=%s base_unsub=%s",
                 campaign_id,
                 seller_tg,
                 total,
                 sent,
                 failed,
                 blocked,
-                clicks,
                 base_total,
                 base_active,
                 base_unsub,
