@@ -29,7 +29,7 @@ from loyalty_bot.db.repo import (
     is_seller_allowed,
     get_shop_for_seller,
     get_shop_welcome,
-    get_shop_audience_stats,
+    get_shop_audience_counts,
     list_seller_shops,
     update_shop_welcome,
 )
@@ -388,7 +388,7 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Магазин не найден", show_alert=True)
         return
 
-    stats = await get_shop_audience_stats(pool, shop_id)
+    stats = await get_shop_audience_counts(pool, shop_id)
     gender_unknown = int(stats.get("gender_u", 0)) + int(stats.get("gender_unknown", 0))
 
 
