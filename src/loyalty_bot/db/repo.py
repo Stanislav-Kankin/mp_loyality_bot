@@ -466,6 +466,105 @@ async def get_shop_subscription_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
         }
 
 
+async def get_shop_audience_counts(pool: asyncpg.Pool, shop_id: int) -> dict:
+    """Return audience stats for a shop (MVP analytics).
+
+    Counts are based on shop_customers + customers profile fields.
+
+    - total/subscribed/unsubscribed: all records in shop_customers for this shop
+    - gender/age groups: among subscribed (active) customers only
+    """
+    async with pool.acquire() as conn:
+        # Base counts (all statuses)
+        base = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status='subscribed') AS subscribed,
+                COUNT(*) FILTER (WHERE status='unsubscribed') AS unsubscribed,
+                COUNT(*) AS total
+            FROM shop_customers
+            WHERE shop_id=$1;
+            """,
+            shop_id,
+        )
+
+        # Breakdown among active subscribers only
+        rows_gender = await conn.fetch(
+            """
+            SELECT c.gender, COUNT(*) AS cnt
+            FROM shop_customers sc
+            JOIN customers c ON c.id = sc.customer_id
+            WHERE sc.shop_id=$1 AND sc.status='subscribed'
+            GROUP BY c.gender;
+            """,
+            shop_id,
+        )
+
+        rows_age = await conn.fetch(
+            """
+            SELECT
+                CASE
+                    WHEN c.full_years IS NULL THEN 'unknown'
+                    WHEN c.full_years <= 17 THEN '0_17'
+                    WHEN c.full_years BETWEEN 18 AND 27 THEN '18_27'
+                    WHEN c.full_years BETWEEN 28 AND 35 THEN '28_35'
+                    WHEN c.full_years BETWEEN 36 AND 45 THEN '36_45'
+                    WHEN c.full_years BETWEEN 46 AND 49 THEN '46_49'
+                    ELSE '50_plus'
+                END AS bucket,
+                COUNT(*) AS cnt
+            FROM shop_customers sc
+            JOIN customers c ON c.id = sc.customer_id
+            WHERE sc.shop_id=$1 AND sc.status='subscribed'
+            GROUP BY bucket;
+            """,
+            shop_id,
+        )
+
+    # Normalize gender values to {male, female, unknown}
+    g_male = 0
+    g_female = 0
+    g_unknown = 0
+    for r in rows_gender:
+        g = r["gender"]
+        cnt = int(r["cnt"] or 0)
+        if g is None:
+            g_unknown += cnt
+            continue
+        gs = str(g).strip().lower()
+        if gs in {"m", "male", "man", "м", "муж", "мужчина"}:
+            g_male += cnt
+        elif gs in {"f", "female", "woman", "ж", "жен", "женщина"}:
+            g_female += cnt
+        else:
+            g_unknown += cnt
+
+    age = {
+        "0_17": 0,
+        "18_27": 0,
+        "28_35": 0,
+        "36_45": 0,
+        "46_49": 0,
+        "50_plus": 0,
+        "unknown": 0,
+    }
+    for r in rows_age:
+        bucket = str(r["bucket"])
+        age[bucket] = int(r["cnt"] or 0)
+
+    return {
+        "total": int(base["total"] or 0) if base else 0,
+        "subscribed": int(base["subscribed"] or 0) if base else 0,
+        "unsubscribed": int(base["unsubscribed"] or 0) if base else 0,
+        "gender": {"male": g_male, "female": g_female, "unknown": g_unknown},
+        "age": age,
+    }
+
+
+# Backward/forward compatibility (older router imports)
+async def get_shop_audience_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
+    return await get_shop_audience_counts(pool, shop_id)
+
 # Admin helpers (used by admin shop actions in shop card)
 
 
