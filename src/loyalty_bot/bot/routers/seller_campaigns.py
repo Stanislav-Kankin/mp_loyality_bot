@@ -1039,10 +1039,8 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(
-        f"Создана повторная рассылка #{new_campaign_id} (копия #{source_campaign_id}).
-"
-        f"Получателей: {total}.
-"
+        f"Создана повторная рассылка #{new_campaign_id} (копия #{source_campaign_id})."
+        f"Получателей: {total}."
         "Воркер отправит сообщения в фоне.",
         reply_markup=kb.as_markup(),
     )
