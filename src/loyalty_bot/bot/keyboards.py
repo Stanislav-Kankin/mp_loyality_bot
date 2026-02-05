@@ -69,7 +69,10 @@ def shop_actions(shop_id: int, *, is_admin: bool = False) -> InlineKeyboardMarku
         kb.button(text="✏️ Редактировать", callback_data=f"admin:shop:edit:{shop_id}")
         kb.button(text="🗑 Отключить", callback_data=f"admin:shop:disable:{shop_id}")
     kb.button(text="⬅️ К списку", callback_data="shops:list")
-    kb.adjust(2, 2, 1, 2 if is_admin else 0, 1)
+    if is_admin:
+        kb.adjust(2, 2, 1, 2, 1)
+    else:
+        kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
 
