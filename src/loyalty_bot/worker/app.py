@@ -179,7 +179,10 @@ async def main() -> None:
             if not items:
                 # Still try to finalize campaigns periodically.
                 await finalize_completed_campaigns(pool)
-                await _notify_completed_campaigns(bot, pool)
+                try:
+                    await _notify_completed_campaigns(bot, pool)
+                except Exception:
+                    logger.exception('notify_completed_campaigns failed (will retry later)')
                 await asyncio.sleep(float(settings.send_tick_seconds))
                 continue
 
