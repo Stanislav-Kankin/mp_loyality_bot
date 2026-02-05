@@ -409,6 +409,23 @@ async def list_seller_shops(pool: asyncpg.Pool, seller_tg_user_id: int) -> list[
         ]
 
 
+async def count_seller_shops(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
+    """Return number of shops belonging to seller."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            return 0
+        return int(row["cnt"] or 0)
+
+
 async def get_shop_for_seller(pool: asyncpg.Pool, seller_tg_user_id: int, shop_id: int) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(

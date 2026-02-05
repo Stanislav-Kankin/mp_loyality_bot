@@ -26,12 +26,13 @@ from loyalty_bot.db.repo import (
     create_shop,
     ensure_seller,
     get_seller_credits,
-    get_seller_trial,
     is_seller_allowed,
     get_shop_for_seller,
     get_shop_welcome,
     get_shop_audience_counts,
     list_seller_shops,
+    count_seller_shops,
+    get_seller_trial,
     update_shop_welcome,
 )
 
@@ -77,14 +78,23 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
         return True
-
-    # DEMO funnel: allow seller navigation if trial has started.
+    # DEMO sellers (trial) are also treated as sellers inside DEMO bot.
     trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
     return bool(trial and trial.get("trial_started_at"))
 
 
 async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
-    """True if user is a trial seller but NOT in real allowlist/admin."""
+    """True if user is a DEMO seller (trial active) but not an admin/allowlisted seller."""
+    if _is_admin(tg_id):
+        return False
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    """True if user is in DEMO trial (not admin/allowlisted), used for DEMO restrictions."""
     if _is_admin(tg_id):
         return False
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
@@ -162,11 +172,6 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
 
-    # DEMO bot: purchases are forbidden. Keep "Нет доступа" for pack buttons.
-    if await _is_demo_seller(pool, tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
-
     parts = (cb.data or "").split(":")
     # expected: credits:pkg:<qty>[:ctx]
     if len(parts) < 3 or not parts[2].isdigit():
@@ -241,6 +246,13 @@ async def shops_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
+
+    # DEMO restriction: only 1 shop.
+    if await _is_demo_seller(pool, tg_id):
+        shops_cnt = await count_seller_shops(pool, seller_tg_user_id=tg_id)
+        if shops_cnt >= 1:
+            await cb.answer("В демо можно создать только 1 магазин.", show_alert=True)
+            return
     await state.clear()
     await state.set_state(ShopCreate.name)
     await cb.message.edit_text("Введите название магазина (текстом):")
@@ -282,6 +294,14 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
         await state.clear()
         await message.answer("Ошибка состояния. Начните заново: /seller")
         return
+
+    # DEMO restriction: only 1 shop (double-check before insert).
+    if await _is_demo_seller(pool, tg_id):
+        shops_cnt = await count_seller_shops(pool, seller_tg_user_id=tg_id)
+        if shops_cnt >= 1:
+            await state.clear()
+            await message.answer("В демо можно создать только 1 магазин.")
+            return
 
     shop_id = await create_shop(pool, seller_tg_user_id=tg_id, name=name, category=category)
     await state.clear()
