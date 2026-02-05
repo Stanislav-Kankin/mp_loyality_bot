@@ -14,6 +14,7 @@ from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaig
 from loyalty_bot.db.repo import (
     is_seller_allowed,
     get_seller_credits,
+    get_seller_trial,
     start_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
@@ -23,7 +24,6 @@ from loyalty_bot.db.repo import (
     list_shop_campaigns_page,
     list_seller_shops,
     get_shop_for_seller,
-    get_seller_trial,
 )
 
 def _status_label(status: str) -> str:
@@ -484,7 +484,13 @@ class CampaignCreate(StatesGroup):
 async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     if tg_id in settings.admin_ids_set:
         return True
-    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
+    # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return True
+
+    # DEMO funnel: allow seller navigation if trial has started.
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
 
 
 def _is_valid_url(url: str) -> bool:

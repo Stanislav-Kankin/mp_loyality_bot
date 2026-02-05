@@ -26,13 +26,13 @@ from loyalty_bot.db.repo import (
     create_shop,
     ensure_seller,
     get_seller_credits,
+    get_seller_trial,
     is_seller_allowed,
     get_shop_for_seller,
     get_shop_welcome,
     get_shop_audience_counts,
     list_seller_shops,
     update_shop_welcome,
-    get_seller_trial,
 )
 
 router = Router()
@@ -75,7 +75,22 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     if _is_admin(tg_id):
         return True
     # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
-    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return True
+
+    # DEMO funnel: allow seller navigation if trial has started.
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    """True if user is a trial seller but NOT in real allowlist/admin."""
+    if _is_admin(tg_id):
+        return False
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
 
 
 def _shop_deeplink(bot_username: str, shop_id: int) -> str:
@@ -144,6 +159,11 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     """Start credits pack payment by sending Telegram invoice."""
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    # DEMO bot: purchases are forbidden. Keep "Нет доступа" for pack buttons.
+    if await _is_demo_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
