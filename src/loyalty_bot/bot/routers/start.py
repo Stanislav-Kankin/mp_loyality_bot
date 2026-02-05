@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncpg
+import logging
+import datetime
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.filters.command import CommandObject
@@ -24,9 +26,12 @@ from loyalty_bot.db.repo import (
     update_customer_profile,
     get_shop_welcome,
     get_customer_subscribed_shops,
+    set_seller_trial_started,
 )
 
 router = Router()
+
+logger = logging.getLogger(__name__)
 
 async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int) -> None:
     welcome = await get_shop_welcome(pool, shop_id=shop_id)
@@ -80,7 +85,15 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         await message.answer("Ошибка: не удалось определить Telegram user id.")
         return
 
-    shop_id = _parse_shop_payload(command.args)
+    raw_args = (command.args or '').strip() or None
+    shop_id = _parse_shop_payload(raw_args)
+    source = 'none'
+    if shop_id is not None:
+        source = 'buyer_shop'
+    elif raw_args == 'landing':
+        source = 'seller_landing'
+    logger.info('start: tg_id=%s payload=%r source=%s', tg_id, raw_args, source)
+
 
     # Buyer flow (opt-in via deep-link)
     if shop_id is not None:
@@ -121,6 +134,33 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         )
         await _send_shop_welcome(message, pool, shop_id)
         return
+
+
+        # Seller landing flow (from website). Trial does NOT start automatically.
+        if raw_args == "landing":
+            b = InlineKeyboardBuilder()
+            b.button(text="🎁 Получить демо (7 дней)", callback_data="trial:start")
+            b.button(text="ℹ️ INFO", callback_data="trial:info")
+            b.adjust(1)
+
+            await message.answer(
+                "DEMO для селлера
+
+"
+                "— 7 дней доступа к демо-режиму
+"
+                "— можно создать 1 магазин и сделать 3 тестовые рассылки
+"
+                "— покупки в DEMO запрещены
+"
+                "— база покупателей НЕ переносится в персонального бота
+
+"
+                "Нажмите кнопку ниже, чтобы запустить демо.",
+                reply_markup=b.as_markup(),
+            )
+            return
+
 
     # Seller flow
     # Admins are always allowed.
@@ -173,6 +213,51 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         "Если вы продавец — попросите администратора добавить ваш TG id в админке бота."
     )
 
+
+
+
+    @router.callback_query(F.data == "trial:info")
+    async def trial_info(cb: CallbackQuery) -> None:
+        await cb.answer()
+        await cb.message.answer(
+            "INFO
+
+"
+            "DEMO длится 7 дней с момента нажатия «Получить демо».
+"
+            "В DEMO-боте покупки запрещены.
+"
+            "База покупателей из DEMO не переносится в персонального бота.
+
+"
+            "Чтобы получить персонального бота: создайте бота в BotFather и свяжитесь с нами вне бота."
+        )
+
+
+    @router.callback_query(F.data == "trial:start")
+    async def trial_start(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+        tg_id = cb.from_user.id if cb.from_user else None
+        if tg_id is None:
+            await cb.answer("Ошибка: не удалось определить Telegram user id.", show_alert=True)
+            return
+
+        await ensure_seller(pool, tg_id)
+        info = await set_seller_trial_started(pool, seller_tg_user_id=tg_id)
+        started_at = info.get("trial_started_at")
+        ends_at = None
+        if started_at is not None:
+            ends_at = started_at + datetime.timedelta(days=7)
+
+        await cb.answer("Демо активировано ✅")
+        text = "Демо активировано на 7 дней."
+        if ends_at is not None:
+            text += f"\n\nДоступно до: {ends_at:%Y-%m-%d %H:%M}"
+        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+        text += f"\nДоступно рассылок: {credits}"
+        await cb.message.answer(
+            text,
+            reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
+        )
 
 @router.message(BuyerOnboarding.full_years)
 async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:

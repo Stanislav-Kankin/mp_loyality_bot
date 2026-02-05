@@ -54,6 +54,53 @@ async def ensure_seller(pool: asyncpg.Pool, tg_user_id: int) -> int:
             return seller_id
 
 
+
+
+async def get_seller_trial(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dict | None:
+    """Return trial info for the seller (if seller exists)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT trial_started_at, trial_state
+            FROM sellers
+            WHERE tg_user_id=$1;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            return None
+        return {
+            "trial_started_at": row["trial_started_at"],
+            "trial_state": row["trial_state"],
+        }
+
+
+async def set_seller_trial_started(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dict:
+    """Start trial if not started yet (idempotent).
+
+    Sets trial_started_at if NULL. Also sets trial_state='active' if not set.
+    Returns updated values.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE sellers
+            SET trial_started_at = COALESCE(trial_started_at, now()),
+                trial_state = COALESCE(trial_state, 'active')
+            WHERE tg_user_id=$1
+            RETURNING id, trial_started_at, trial_state;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            raise ValueError("seller_not_found")
+
+        return {
+            "seller_id": int(row["id"]),
+            "trial_started_at": row["trial_started_at"],
+            "trial_state": row["trial_state"],
+        }
+
 async def get_seller_credits(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
