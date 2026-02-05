@@ -25,7 +25,10 @@ from loyalty_bot.db.repo import (
     mark_delivery_blocked,
     mark_delivery_failed,
     reschedule_delivery,
+    get_shop_audience_counts,
     finalize_completed_campaigns,
+    list_unnotified_completed_campaigns,
+    mark_campaign_completed_notified,
 )
 from loyalty_bot.logging_setup import setup_logging
 
@@ -116,6 +119,40 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
         return
 
 
+async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool) -> None:
+    items = await list_unnotified_completed_campaigns(pool, limit=50)
+    for it in items:
+        campaign_id = int(it["campaign_id"])
+        shop_id = int(it["shop_id"])
+
+        # Audience stats for the shop (total/subscribed/unsubscribed).
+        audience = await get_shop_audience_counts(pool, shop_id)
+        total_recipients = int(it.get("total_recipients") or 0)
+        sent_count = int(it.get("sent_count") or 0)
+        failed_count = int(it.get("failed_count") or 0)
+        blocked_count = int(it.get("blocked_count") or 0)
+        not_delivered = max(0, total_recipients - sent_count - failed_count - blocked_count)
+
+        text = (
+            f"✅ Рассылка №{campaign_id} завершена\n\n"
+            f"👥 Получателей в рассылке: {total_recipients}\n"
+            f"✅ Доставлено: {sent_count}\n"
+            f"❌ Ошибки: {failed_count}\n"
+            f"⛔ Заблокировали: {blocked_count}\n"
+            f"📭 Не доставлено: {not_delivered}\n\n"
+            f"📦 База магазина: {it.get('shop_name','')}\n"
+            f"— всего записей: {int(audience.get('total', 0))}\n"
+            f"— активные (подписаны): {int(audience.get('subscribed', 0))}\n"
+            f"— отписанные: {int(audience.get('unsubscribed', 0))}"
+        )
+
+        try:
+            await bot.send_message(int(it["seller_tg_user_id"]), text)
+            await mark_campaign_completed_notified(pool, campaign_id=campaign_id)
+            logger.info("campaign completed notified campaign_id=%s seller_tg=%s", campaign_id, it["seller_tg_user_id"])
+        except Exception:
+            logger.exception("failed to notify seller for completed campaign_id=%s", campaign_id)
+
 async def main() -> None:
     setup_logging(level=settings.log_level, service_name="worker", log_dir=settings.log_dir)
 
@@ -142,6 +179,7 @@ async def main() -> None:
             if not items:
                 # Still try to finalize campaigns periodically.
                 await finalize_completed_campaigns(pool)
+                await _notify_completed_campaigns(bot, pool)
                 await asyncio.sleep(float(settings.send_tick_seconds))
                 continue
 
@@ -150,6 +188,7 @@ async def main() -> None:
                 await asyncio.sleep(min_delay)
 
             await finalize_completed_campaigns(pool)
+            await _notify_completed_campaigns(bot, pool)
 
     finally:
         await bot.session.close()

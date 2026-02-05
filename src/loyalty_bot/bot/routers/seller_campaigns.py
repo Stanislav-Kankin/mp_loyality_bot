@@ -980,3 +980,69 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
         "Воркер отправит сообщения в фоне."
     )
+
+@router.callback_query(F.data.startswith("campaign:resend:"))
+async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    source_campaign_id = int(raw_id)
+
+    src = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=source_campaign_id)
+    if src is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if credits <= 0:
+        await cb.message.edit_text(
+            "У вас 0 доступных рассылок. Купите пакет:",
+            reply_markup=credits_packages_menu(back_cb=f"campaign:open:{source_campaign_id}", context=f"c{source_campaign_id}"),
+        )
+        await cb.answer()
+        return
+
+    # Create a new draft as a copy and start sending immediately.
+    try:
+        new_campaign_id = await create_campaign_draft(
+            pool,
+            seller_tg_user_id=tg_id,
+            shop_id=int(src["shop_id"]),
+            text=str(src.get("text") or ""),
+            button_title=str(src.get("button_title") or ""),
+            url=str(src.get("url") or ""),
+            photo_file_id=src.get("photo_file_id"),
+            price_minor=int(src.get("price_minor") or 0),
+            currency=str(src.get("currency") or "RUB"),
+        )
+        total = await start_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=new_campaign_id)
+    except ValueError as e:
+        code = str(e)
+        if code == "shop_not_owned":
+            await cb.answer("Нет доступа к магазину", show_alert=True)
+            return
+        if code == "no_credits":
+            await cb.answer("У вас 0 доступных рассылок", show_alert=True)
+            return
+        await cb.answer("Не удалось повторить рассылку", show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
+    kb.button(text="📋 К списку", callback_data="campaigns:list")
+
+    await cb.answer("Запущено ✅")
+    await cb.message.answer(
+        f"Создана повторная рассылка #{new_campaign_id} (копия #{source_campaign_id}).
+"
+        f"Получателей: {total}.
+"
+        "Воркер отправит сообщения в фоне.",
+        reply_markup=kb.as_markup(),
+    )

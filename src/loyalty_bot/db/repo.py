@@ -1206,6 +1206,46 @@ async def finalize_completed_campaigns(pool: asyncpg.Pool) -> int:
         return int(row or 0)
 
 
+async def list_unnotified_completed_campaigns(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Return completed campaigns for which the seller has not been notified yet."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                c.id AS campaign_id,
+                c.shop_id,
+                c.total_recipients,
+                c.sent_count,
+                c.failed_count,
+                c.blocked_count,
+                s.tg_user_id AS seller_tg_user_id,
+                sh.name AS shop_name
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE c.status='completed'
+              AND c.completed_notified_at IS NULL
+            ORDER BY c.id ASC
+            LIMIT $1;
+            """,
+            int(limit),
+        )
+        return [dict(r) for r in rows]
+
+
+async def mark_campaign_completed_notified(pool: asyncpg.Pool, *, campaign_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE campaigns
+            SET completed_notified_at = now()
+            WHERE id=$1 AND completed_notified_at IS NULL;
+            """,
+            int(campaign_id),
+        )
+
+
+
 async def record_campaign_click(
     pool: asyncpg.Pool,
     *,
