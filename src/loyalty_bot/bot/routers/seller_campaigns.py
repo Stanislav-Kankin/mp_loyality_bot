@@ -23,6 +23,7 @@ from loyalty_bot.db.repo import (
     list_shop_campaigns_page,
     list_seller_shops,
     get_shop_for_seller,
+    get_seller_trial,
 )
 
 def _status_label(status: str) -> str:

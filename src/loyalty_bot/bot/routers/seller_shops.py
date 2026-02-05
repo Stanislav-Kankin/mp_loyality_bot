@@ -32,6 +32,7 @@ from loyalty_bot.db.repo import (
     get_shop_audience_counts,
     list_seller_shops,
     update_shop_welcome,
+    get_seller_trial,
 )
 
 router = Router()
