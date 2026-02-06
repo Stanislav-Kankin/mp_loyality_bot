@@ -331,14 +331,13 @@ async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
     await _campaign_finish_edit(cb.message, state, pool, tg_id)
     await cb.answer()
 
-def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
-    shop_id = int(src["shop_id"])
 
+def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Новая рассылка", callback_data=f"shop:campaigns:new:{shop_id}")
-    kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
+    kb.button(text="➕ Создать рассылку", callback_data=f"campaign:create:{shop_id}")
+    kb.button(text="📋 Мои рассылки", callback_data=f"campaign:list:{shop_id}")
     kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
-    kb.adjust(1)
+    kb.adjust(1, 1, 1)
     return kb
 
 
