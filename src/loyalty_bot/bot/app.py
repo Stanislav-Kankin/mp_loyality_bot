@@ -12,6 +12,7 @@ from loyalty_bot.db.pool import create_pool
 from loyalty_bot.logging_setup import setup_logging
 from loyalty_bot.bot.middlewares.db import DbMiddleware
 from loyalty_bot.bot.routers.start import router as start_router
+from loyalty_bot.bot.routers.trial_reminders import router as trial_reminders_router
 from loyalty_bot.bot.routers.seller_shops import router as seller_shops_router
 from loyalty_bot.bot.routers.seller_campaigns import router as seller_campaigns_router
 from loyalty_bot.bot.routers.payments import router as payments_router
@@ -34,6 +35,7 @@ async def main() -> None:
     dp.update.middleware(DbMiddleware(pool))
 
     dp.include_router(start_router)
+    dp.include_router(trial_reminders_router)
     dp.include_router(seller_shops_router)
     dp.include_router(seller_campaigns_router)
     dp.include_router(payments_router)

@@ -29,6 +29,10 @@ from loyalty_bot.db.repo import (
     finalize_completed_campaigns,
     list_unnotified_completed_campaigns,
     mark_campaign_completed_notified,
+    list_due_trial_day5_reminders,
+    list_due_trial_day7_reminders,
+    mark_trial_day5_notified,
+    mark_trial_day7_notified,
 )
 from loyalty_bot.logging_setup import setup_logging
 
@@ -48,6 +52,22 @@ def _build_campaign_kb(*, url: str, button_title: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     title = (button_title or "").strip() or "Открыть ссылку"
     kb.button(text=title, url=(url or ""))
+    kb.adjust(1)
+    return kb
+
+
+def _build_trial_day5_kb() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Хочу такого бота", callback_data="trial:day5:want")
+    kb.button(text="⏳ Пока ещё смотрю", callback_data="trial:day5:later")
+    kb.adjust(1)
+    return kb
+
+
+def _build_trial_day7_kb() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Хочу такого бота", callback_data="trial:day7:want")
+    kb.button(text="🚫 Нет, спасибо", callback_data="trial:day7:no")
     kb.adjust(1)
     return kb
 
@@ -153,6 +173,42 @@ async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool) -> None:
         except Exception:
             logger.exception("failed to notify seller for completed campaign_id=%s", campaign_id)
 
+
+async def _notify_trial_reminders(bot: Bot, pool: asyncpg.Pool) -> None:
+    """Send DEMO reminders on day 5 and day 7 (once)."""
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        return
+
+    # Day 5
+    day5 = await list_due_trial_day5_reminders(pool, limit=50)
+    for it in day5:
+        tg_user_id = int(it["tg_user_id"])
+        try:
+            await bot.send_message(
+                tg_user_id,
+                "⏰ Уже 5-й день демо. Хотите такого персонального бота?",
+                reply_markup=_build_trial_day5_kb().as_markup(),
+            )
+            await mark_trial_day5_notified(pool, tg_user_id=tg_user_id)
+            logger.info("trial day5 notified tg_id=%s", tg_user_id)
+        except Exception:
+            logger.exception("failed to send trial day5 reminder tg_id=%s", tg_user_id)
+
+    # Day 7
+    day7 = await list_due_trial_day7_reminders(pool, limit=50)
+    for it in day7:
+        tg_user_id = int(it["tg_user_id"])
+        try:
+            await bot.send_message(
+                tg_user_id,
+                "⏰ Демо закончилось. Хотите подключить персонального бота?",
+                reply_markup=_build_trial_day7_kb().as_markup(),
+            )
+            await mark_trial_day7_notified(pool, tg_user_id=tg_user_id)
+            logger.info("trial day7 notified tg_id=%s", tg_user_id)
+        except Exception:
+            logger.exception("failed to send trial day7 reminder tg_id=%s", tg_user_id)
+
 async def main() -> None:
     setup_logging(level=settings.log_level, service_name="worker", log_dir=settings.log_dir)
 
@@ -181,6 +237,7 @@ async def main() -> None:
                 await finalize_completed_campaigns(pool)
                 try:
                     await _notify_completed_campaigns(bot, pool)
+                    await _notify_trial_reminders(bot, pool)
                 except Exception:
                     logger.exception('notify_completed_campaigns failed (will retry later)')
                 await asyncio.sleep(float(settings.send_tick_seconds))
@@ -192,6 +249,7 @@ async def main() -> None:
 
             await finalize_completed_campaigns(pool)
             await _notify_completed_campaigns(bot, pool)
+            await _notify_trial_reminders(bot, pool)
 
     finally:
         await bot.session.close()
