@@ -917,6 +917,8 @@ async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await cb.answer("Ок ✅")
     await cb.message.answer(f"Ссылка: {camp['url']}")
+
+
 @router.callback_query(F.data.startswith("campaign:pay:stub:"))
 async def campaign_pay_stub(cb: CallbackQuery) -> None:
     await cb.answer("Оплата будет на следующем этапе (Этап 3).", show_alert=True)
@@ -986,7 +988,7 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
-    
+
     shop_id: int | None = None
     try:
         if camp is not None and camp.get("shop_id") is not None:
@@ -1001,11 +1003,11 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.message.answer(
-        f"Рассылка #{campaign_id} запущена. Получателей: {total}.
-"
+        f"Рассылка #{campaign_id} запущена. Получателей: {total}."
         "Воркер отправит сообщения в фоне.",
         reply_markup=kb.as_markup(),
     )
+
 
 @router.callback_query(F.data.startswith("campaign:resend:"))
 async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
