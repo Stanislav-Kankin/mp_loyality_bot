@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -25,6 +25,34 @@ from loyalty_bot.db.repo import (
     list_seller_shops,
     get_shop_for_seller,
 )
+
+
+def _trial_is_expired(started_at: datetime | None) -> bool:
+    """Trial is considered expired after 7 full days from trial_started_at."""
+    if started_at is None:
+        return False
+    now = datetime.now(timezone.utc)
+    # started_at is timestamptz from Postgres; may be tz-aware already.
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return now >= (started_at + timedelta(days=7))
+
+
+async def _deny_if_demo_readonly(*, pool: asyncpg.Pool, tg_id: int, cb: CallbackQuery | None = None, msg: Message | None = None) -> bool:
+    """Return True if action must be denied due to expired DEMO trial."""
+    if not settings.is_demo_bot:
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    started_at = trial.get("trial_started_at") if trial else None
+    if not _trial_is_expired(started_at):
+        return False
+
+    text = "⛔ DEMO истекло. Доступен только просмотр (read-only)."
+    if cb is not None:
+        await cb.answer(text, show_alert=True)
+    if msg is not None:
+        await msg.answer(text)
+    return True
 
 def _status_label(status: str) -> str:
     s = (status or "").strip().lower()
@@ -379,6 +407,9 @@ async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg
         await cb.answer("Нет доступа", show_alert=True)
         return
 
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
     raw_id = cb.data.split(":")[-1]
     if not raw_id.isdigit():
         await cb.answer("Некорректный id", show_alert=True)
@@ -555,6 +586,9 @@ async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asy
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
         return
 
     shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
@@ -939,6 +973,12 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Нет доступа", show_alert=True)
         return
 
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
     raw_id = cb.data.split(":")[-1]
     if not raw_id.isdigit():
         await cb.answer("Некорректный id", show_alert=True)
@@ -1014,6 +1054,15 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
         return
 
     raw_id = cb.data.split(":")[-1]

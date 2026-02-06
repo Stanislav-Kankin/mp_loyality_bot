@@ -28,7 +28,12 @@ def _admins() -> list[int]:
 
 
 async def _notify_admins_about_lead(*, bot, tg_user_id: int, username: str | None, text: str) -> None:
-    for admin_id in _admins():
+    admins = _admins()
+    if not admins:
+        logger.warning("no admins configured for trial leads (TELEGRAM_ADMIN_IDS is empty)")
+        return
+
+    for admin_id in admins:
         try:
             await bot.send_message(admin_id, text)
         except Exception:

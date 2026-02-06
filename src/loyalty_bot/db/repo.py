@@ -1667,13 +1667,13 @@ async def save_trial_feedback(
     feedback_text: str | None,
 ) -> None:
     """Persist feedback/lead decisions from day5/day7 trial reminders."""
+    # NOTE: DB schema stores only the free-text feedback and timestamp.
+    # stage/answer are kept in the API for UX/analytics but are not persisted in MVP.
     q = """
         UPDATE sellers
-        SET trial_feedback_at = now(),
-            trial_feedback_stage = $2,
-            trial_feedback_answer = $3,
-            trial_feedback_text = $4
+        SET trial_feedback_received_at = now(),
+            trial_feedback_text = $2
         WHERE tg_user_id = $1;
     """
     async with pool.acquire() as conn:
-        await conn.execute(q, tg_user_id, stage, answer, feedback_text)
+        await conn.execute(q, tg_user_id, feedback_text)
