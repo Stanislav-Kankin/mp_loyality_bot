@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -129,6 +129,8 @@ async def campaign_edit_cancel(cb: CallbackQuery, state: FSMContext, pool: async
 
 @router.callback_query(F.data.startswith("campaign:edit:"))
 async def campaign_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -493,6 +495,46 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     return bool(trial and trial.get("trial_started_at"))
 
 
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    # demo seller == not allowlisted/admin, but has trial_started_at
+    if tg_id in settings.admin_ids_set:
+        return False
+    if tg_id in settings.seller_ids_set:
+        return False
+    if await is_seller_allowed(pool, tg_id):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool((trial or {}).get("trial_started_at"))
+
+
+async def _is_trial_expired(pool: asyncpg.Pool, tg_id: int) -> bool:
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    started_at = (trial or {}).get("trial_started_at")
+    if not started_at:
+        return False
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return datetime.now(tz=timezone.utc) > (started_at + timedelta(days=7))
+
+
+async def _deny_if_readonly_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> bool:
+    tg_id = cb.from_user.id if cb.from_user else 0
+    if await _is_demo_seller(pool, tg_id) and await _is_trial_expired(pool, tg_id):
+        await cb.answer("Демо закончилась. Режим только чтение.", show_alert=True)
+        return True
+    return False
+
+
+async def _deny_if_readonly_msg(msg: Message, state: FSMContext, pool: asyncpg.Pool) -> bool:
+    tg_id = msg.from_user.id if msg.from_user else 0
+    if await _is_demo_seller(pool, tg_id) and await _is_trial_expired(pool, tg_id):
+        await state.clear()
+        await msg.answer("Демо закончилась. Режим только чтение.")
+        return True
+    return False
+
 def _is_valid_url(url: str) -> bool:
     u = url.strip()
     return (u.startswith("http://") or u.startswith("https://")) and len(u) <= 2048
@@ -549,6 +591,8 @@ async def seller_campaigns_home(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data == "campaigns:create")
 async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -577,6 +621,8 @@ async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asy
 
 @router.callback_query(F.data.startswith("campaigns:shop:"))
 async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -597,6 +643,8 @@ async def campaigns_shop_selected(cb: CallbackQuery, state: FSMContext, pool: as
 
 @router.message(CampaignCreate.text)
 async def campaigns_text(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_msg(message, state, pool):
+        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -635,7 +683,9 @@ async def campaigns_text(message: Message, state: FSMContext, pool: asyncpg.Pool
 
 
 @router.callback_query(F.data == "campaignphoto:skip")
-async def campaigns_create_photo_skip(cb: CallbackQuery, state: FSMContext) -> None:
+async def campaigns_create_photo_skip(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     # Create-flow only (edit flow has its own skip handlers).
     data = await state.get_data()
     if _is_edit_flow(data):
@@ -649,7 +699,9 @@ async def campaigns_create_photo_skip(cb: CallbackQuery, state: FSMContext) -> N
 
 
 @router.message(CampaignCreate.photo)
-async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
+async def campaigns_create_photo(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_msg(message, state, pool):
+        return
     data = await state.get_data()
     is_edit = _is_edit_flow(data)
     cancel_cb = f"campaignedit:cancel:{data.get('campaign_id')}" if is_edit else "campaigncreate:cancel"
@@ -684,6 +736,8 @@ async def campaigns_create_photo(message: Message, state: FSMContext) -> None:
 
 @router.message(CampaignCreate.button_title)
 async def campaigns_button_title(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_msg(message, state, pool):
+        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -717,6 +771,8 @@ async def campaigns_button_title(message: Message, state: FSMContext, pool: asyn
 
 @router.message(CampaignCreate.url)
 async def campaigns_url(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_msg(message, state, pool):
+        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -921,6 +977,8 @@ async def campaign_pay_stub(cb: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:pay:test:"))
 async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     """Deprecated: test payment flow is disabled.
 
     Kept to avoid crashes if old messages with callbacks are still around.
@@ -929,6 +987,8 @@ async def campaign_pay_test(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("campaign:send:"))
 async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -983,23 +1043,15 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
-
-    # Convenience navigation after starting sending.
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📣 К рассылкам", callback_data="campaigns:list")
-    if camp is not None and str(camp.get("shop_id") or "").isdigit():
-        kb.button(text="🏪 Меню магазина", callback_data=f"shop:open:{int(camp['shop_id'])}")
-    kb.button(text="🏠 Главное меню", callback_data="seller:home")
-    kb.adjust(2, 1)
-
     await cb.message.answer(
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
-        "Воркер отправит сообщения в фоне.",
-        reply_markup=kb.as_markup(),
+        "Воркер отправит сообщения в фоне."
     )
 
 @router.callback_query(F.data.startswith("campaign:resend:"))
 async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    if await _deny_if_readonly_cb(cb, pool):
+        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -1053,9 +1105,6 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
-    kb.button(text="🏪 Меню магазина", callback_data=f"shop:open:{int(src['shop_id'])}")
-    kb.button(text="🏠 Главное меню", callback_data="seller:home")
-    kb.adjust(2, 2)
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(
