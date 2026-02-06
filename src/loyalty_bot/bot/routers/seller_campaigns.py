@@ -332,6 +332,8 @@ async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
     await cb.answer()
 
 def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
+    shop_id = int(src["shop_id"])
+
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Новая рассылка", callback_data=f"shop:campaigns:new:{shop_id}")
     kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
@@ -985,9 +987,15 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{campaign_id}")
+    kb.button(text="📋 К списку", callback_data="campaigns:list")
+    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+
     await cb.message.answer(
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
-        "Воркер отправит сообщения в фоне."
+        "Воркер отправит сообщения в фоне.",
+        reply_markup=kb.as_markup(),
     )
 
 @router.callback_query(F.data.startswith("campaign:resend:"))
@@ -1045,6 +1053,7 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
+    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(

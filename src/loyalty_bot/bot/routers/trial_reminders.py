@@ -108,7 +108,13 @@ async def trial_feedback_text(message: Message, state: FSMContext, pool) -> None
     username = f"@{u.username}" if u and u.username else "(no username)"
 
     try:
-        await repo.save_trial_feedback(pool, tg_user_id=u.id, text=text)
+        await repo.save_trial_feedback(
+            pool,
+            tg_user_id=u.id,
+            stage="day7",
+            answer="no",
+            feedback_text=text,
+        )
     except Exception:
         logger.exception("failed to save trial feedback")
 
