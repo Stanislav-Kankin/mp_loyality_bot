@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -10,12 +10,11 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
+from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb, credits_packages_menu
 from loyalty_bot.db.repo import (
     is_seller_allowed,
     get_seller_credits,
     get_seller_trial,
-    count_seller_started_campaigns,
     start_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
@@ -494,28 +493,6 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     return bool(trial and trial.get("trial_started_at"))
 
 
-
-def _demo_expires_at(trial_started_at: datetime) -> datetime:
-    return trial_started_at + timedelta(days=7)
-
-
-async def _get_demo_state(pool: asyncpg.Pool, tg_id: int) -> dict:
-    """Return demo-related state for tg_id.
-
-    demo=True only if trial has started AND user is not a real seller (admin/allowlist).
-    """
-    # Real seller access:
-    real = tg_id in settings.admin_ids_set or (tg_id in settings.seller_ids_set) or await is_seller_allowed(pool, tg_id)
-
-    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
-    started_at = trial.get("trial_started_at") if trial else None
-    if not started_at:
-        return {"demo": False, "started_at": None, "expires_at": None, "expired": False}
-
-    expires_at = _demo_expires_at(started_at)
-    now = datetime.now(timezone.utc)
-    expired = bool(now > expires_at)
-    return {"demo": (not real), "started_at": started_at, "expires_at": expires_at, "expired": expired}
 def _is_valid_url(url: str) -> bool:
     u = url.strip()
     return (u.startswith("http://") or u.startswith("https://")) and len(u) <= 2048
@@ -963,25 +940,8 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         return
     campaign_id = int(raw_id)
 
-    demo_state = await _get_demo_state(pool, tg_id)
-    if demo_state.get("demo") and demo_state.get("expired"):
-        await cb.answer(
-            "Демо-режим закончился. Сейчас доступен только просмотр и черновики. Для подключения персонального бота — свяжитесь с нами.",
-            show_alert=True,
-        )
-        return
-
-    if demo_state.get("demo"):
-        started = await count_seller_started_campaigns(pool, seller_tg_user_id=tg_id)
-        if started >= 3:
-            await cb.answer("Лимит демо: 3 рассылки. Для продолжения нужен персональный бот.", show_alert=True)
-            return
-
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     if credits <= 0:
-        if demo_state.get("demo"):
-            await cb.answer("В демо-режиме покупки отключены. Нельзя докупить рассылки.", show_alert=True)
-            return
         await cb.message.edit_text(
             "У вас 0 доступных рассылок. Купите пакет:",
             reply_markup=credits_packages_menu(back_cb=f"campaign:open:{campaign_id}", context=f"c{campaign_id}"),
