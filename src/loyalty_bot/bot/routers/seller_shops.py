@@ -155,10 +155,16 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if isinstance(ctx, str) and ctx.startswith("c") and ctx[1:].isdigit():
         back_cb = f"campaign:open:{int(ctx[1:])}"
 
+    demo_note = ""
+    if await _is_demo_seller(pool, tg_id):
+        demo_note = "\n\n⚠️ В демо-режиме покупки отключены."
+
     text = (
         "💰 Покупка рассылок\n"
-        f"Текущий баланс: {credits}\n\n"
+        f"Текущий"
+        f" баланс: {credits}\n\n"
         "Выберите пакет и оплатите через Telegram Payments (ЮKassa)."
+        f"{demo_note}"
     )
     await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb=back_cb, context=ctx))
     await cb.answer()
@@ -169,6 +175,11 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     """Start credits pack payment by sending Telegram invoice."""
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    # DEMO bot: purchases are forbidden.
+    if await _is_demo_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
