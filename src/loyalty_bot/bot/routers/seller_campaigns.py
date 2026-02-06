@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
