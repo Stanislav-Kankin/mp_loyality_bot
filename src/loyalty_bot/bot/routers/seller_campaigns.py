@@ -986,10 +986,18 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+    shop_id: int | None = None
+    if camp is not None and camp.get("shop_id") is not None:
+        try:
+            shop_id = int(camp["shop_id"])
+        except (TypeError, ValueError):
+            shop_id = None
+
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
-    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+    if shop_id is not None:
+        kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.message.answer(
         f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
@@ -1015,12 +1023,6 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Кампания не найдена", show_alert=True)
         return
 
-    try:
-        shop_id = int(src["shop_id"])
-    except (KeyError, TypeError, ValueError):
-        await cb.answer("Не удалось определить магазин кампании", show_alert=True)
-        return
-
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     if credits <= 0:
         await cb.message.edit_text(
@@ -1035,7 +1037,7 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         new_campaign_id = await create_campaign_draft(
             pool,
             seller_tg_user_id=tg_id,
-            shop_id=shop_id,
+            shop_id=int(src["shop_id"]),
             text=str(src.get("text") or ""),
             button_title=str(src.get("button_title") or ""),
             url=str(src.get("url") or ""),
@@ -1058,7 +1060,8 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
-    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+    if shop_id is not None:
+        kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(

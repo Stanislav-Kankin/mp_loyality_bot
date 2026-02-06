@@ -18,6 +18,7 @@ from loyalty_bot.bot.routers.seller_campaigns import router as seller_campaigns_
 from loyalty_bot.bot.routers.payments import router as payments_router
 from loyalty_bot.bot.routers.admin_shops import router as admin_shops_router
 from loyalty_bot.bot.routers.admin_panel import router as admin_panel_router
+from loyalty_bot.bot.routers.fallback import router as fallback_router
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ async def main() -> None:
     dp.include_router(payments_router)
     dp.include_router(admin_panel_router)
     dp.include_router(admin_shops_router)
+    dp.include_router(fallback_router)
 
     logger.info("Bot started")
     try:
