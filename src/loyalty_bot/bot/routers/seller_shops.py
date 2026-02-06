@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
 import asyncpg
 from aiogram import F, Router
@@ -79,13 +78,17 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
         return True
-    # DEMO sellers (trial) are also treated as sellers inside DEMO bot.
+    # DEMO sellers (trial) are treated as sellers only inside DEMO bot.
+    if not settings.is_demo_bot:
+        return False
     trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
     return bool(trial and trial.get("trial_started_at"))
 
 
 async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     """True if user is a DEMO seller (trial active) but not an admin/allowlisted seller."""
+    if not settings.is_demo_bot:
+        return False
     if _is_admin(tg_id):
         return False
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
@@ -96,6 +99,8 @@ async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
 
 async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     """True if user is in DEMO trial (not admin/allowlisted), used for DEMO restrictions."""
+    if not settings.is_demo_bot:
+        return False
     if _is_admin(tg_id):
         return False
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
@@ -103,34 +108,6 @@ async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
     return bool(trial and trial.get("trial_started_at"))
 
-
-
-
-async def _is_trial_expired(pool: asyncpg.Pool, tg_id: int) -> bool:
-    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
-    started_at = (trial or {}).get("trial_started_at")
-    if not started_at:
-        return False
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    return datetime.now(tz=timezone.utc) > (started_at + timedelta(days=7))
-
-
-async def _deny_if_readonly_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> bool:
-    tg_id = cb.from_user.id if cb.from_user else 0
-    if await _is_demo_seller(pool, tg_id) and await _is_trial_expired(pool, tg_id):
-        await cb.answer("Демо закончилась. Режим только чтение.", show_alert=True)
-        return True
-    return False
-
-
-async def _deny_if_readonly_msg(msg: Message, state: FSMContext, pool: asyncpg.Pool) -> bool:
-    tg_id = msg.from_user.id if msg.from_user else 0
-    if await _is_demo_seller(pool, tg_id) and await _is_trial_expired(pool, tg_id):
-        await state.clear()
-        await msg.answer("Демо закончилась. Режим только чтение.")
-        return True
-    return False
 
 def _shop_deeplink(bot_username: str, shop_id: int) -> str:
     return f"https://t.me/{bot_username}?start=shop_{shop_id}"
@@ -169,8 +146,6 @@ async def seller_home_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("credits:menu"))
 async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -203,8 +178,6 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("credits:pkg:"))
 async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     """Start credits pack payment by sending Telegram invoice."""
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
@@ -261,8 +234,6 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("credits:test:3"))
 async def credits_test_buy_3_cb(cb: CallbackQuery) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     """Deprecated: test purchase is disabled.
 
     Kept to avoid crashes if old messages with callbacks are still around.
@@ -288,8 +259,6 @@ async def seller_orders_stub(cb: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "shops:create")
 async def shops_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -309,8 +278,6 @@ async def shops_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg
 
 @router.message(ShopCreate.name)
 async def shops_create_name(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -328,8 +295,6 @@ async def shops_create_name(message: Message, state: FSMContext, pool: asyncpg.P
 
 @router.message(ShopCreate.category)
 async def shops_create_category(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         await message.answer("Нет доступа.")
@@ -626,8 +591,6 @@ async def shop_welcome_preview(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 @router.callback_query(F.data.startswith("shopwelcome:edit:"))
 async def shop_welcome_edit_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -725,8 +688,6 @@ async def _shop_welcome_finish_update(*, message: Message, pool: asyncpg.Pool, t
 
 @router.callback_query(F.data == "shopwelcome:skip:text")
 async def shop_welcome_skip_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -764,8 +725,6 @@ async def shop_welcome_skip_text(cb: CallbackQuery, state: FSMContext, pool: asy
 
 @router.message(ShopWelcome.text)
 async def shop_welcome_text(message: Message, state: FSMContext) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     text = (message.text or "").strip()
     if not text:
         await message.answer("Текст пустой. Введите welcome-текст.")
@@ -790,8 +749,6 @@ async def shop_welcome_text(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "shopwelcome:skip:photo")
 async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -828,8 +785,6 @@ async def shop_welcome_skip_photo(cb: CallbackQuery, state: FSMContext, pool: as
 
 @router.message(ShopWelcome.photo)
 async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     tg_id = message.from_user.id
     if not await _is_seller(pool, tg_id):
         return
@@ -871,8 +826,6 @@ async def shop_welcome_photo(message: Message, state: FSMContext, pool: asyncpg.
 
 @router.callback_query(F.data == "shopwelcome:skip:button_text")
 async def shop_welcome_skip_button_text(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -912,8 +865,6 @@ async def shop_welcome_skip_button_text(cb: CallbackQuery, state: FSMContext, po
 
 @router.message(ShopWelcome.button_text)
 async def shop_welcome_button_text(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         return
@@ -950,8 +901,6 @@ async def shop_welcome_button_text(message: Message, state: FSMContext, pool: as
 
 @router.callback_query(F.data == "shopwelcome:skip:url")
 async def shop_welcome_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_cb(cb, pool):
-        return
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -980,8 +929,6 @@ async def shop_welcome_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
 
 @router.message(ShopWelcome.url)
 async def shop_welcome_url(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
-    if await _deny_if_readonly_msg(message, state, pool):
-        return
     tg_id = message.from_user.id if message.from_user else None
     if tg_id is None or not await _is_seller(pool, tg_id):
         return

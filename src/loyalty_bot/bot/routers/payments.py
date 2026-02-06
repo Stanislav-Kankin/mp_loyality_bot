@@ -29,6 +29,8 @@ def _is_admin(tg_id: int) -> bool:
 
 async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     """True if user is in DEMO trial (not admin/allowlisted). Purchases are forbidden in DEMO bot."""
+    if not settings.is_demo_bot:
+        return False
     if _is_admin(tg_id):
         return False
     if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):

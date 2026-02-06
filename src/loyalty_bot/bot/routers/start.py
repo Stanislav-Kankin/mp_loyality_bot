@@ -49,6 +49,9 @@ def _trial_expires_at(trial_started_at: datetime.datetime) -> datetime.datetime:
 
 @router.callback_query(F.data == "trial:info")
 async def trial_info(cb: CallbackQuery) -> None:
+    if not settings.is_demo_bot:
+        await cb.answer("Недоступно в этом боте.", show_alert=True)
+        return
     await cb.answer()
     await cb.message.answer(
         "ℹ️ INFO\n\n"
@@ -61,6 +64,9 @@ async def trial_info(cb: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "trial:start")
 async def trial_start(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    if not settings.is_demo_bot:
+        await cb.answer("Недоступно в этом боте.", show_alert=True)
+        return
     tg_id = cb.from_user.id if cb.from_user else None
     if tg_id is None:
         await cb.answer("Ошибка: не удалось определить Telegram user id.", show_alert=True)
@@ -137,6 +143,9 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         return
 
     raw_args = (command.args or '').strip() or None
+    if raw_args == 'landing' and not settings.is_demo_bot:
+        # landing payload is only meaningful in DEMO bot.
+        raw_args = None
     shop_id = _parse_shop_payload(raw_args)
     source = 'none'
     if shop_id is not None:
@@ -145,8 +154,11 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         source = 'seller_landing'
     logger.info('start: tg_id=%s payload=%r source=%s', tg_id, raw_args, source)
 
-    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
-    trial_started_at = trial.get('trial_started_at') if trial else None
+    # Trial/demo exists only in DEMO bot mode.
+    trial_started_at = None
+    if settings.is_demo_bot:
+        trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+        trial_started_at = trial.get('trial_started_at') if trial else None
 
     async def _show_seller_panel(*, show_trial_header: bool) -> None:
         credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
@@ -164,7 +176,8 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         )
 
     # Seller landing flow (from website). Trial does NOT start automatically.
-    if raw_args == 'landing':
+    # In brand bots this payload is ignored.
+    if raw_args == 'landing' and settings.is_demo_bot:
         if trial_started_at is not None:
             await _show_seller_panel(show_trial_header=True)
             return
@@ -234,7 +247,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         allowed = await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
 
     # DEMO sellers: allow access to seller panel if trial already started.
-    if not allowed and trial_started_at is not None:
+    if settings.is_demo_bot and (not allowed) and trial_started_at is not None:
         await ensure_seller(pool, tg_id)
         await _show_seller_panel(show_trial_header=True)
         return
