@@ -16,6 +16,7 @@ from loyalty_bot.db.repo import (
     get_seller_credits,
     get_seller_trial,
     start_campaign_sending,
+    restart_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
     update_campaign_draft,
@@ -1093,40 +1094,28 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Не удалось определить магазин кампании", show_alert=True)
         return
 
-    # Create a new draft as a copy and start sending immediately.
+    # Restart the same campaign to keep a single record in UI.
     try:
-        new_campaign_id = await create_campaign_draft(
-            pool,
-            seller_tg_user_id=tg_id,
-            shop_id=shop_id,
-            text=str(src.get("text") or ""),
-            button_title=str(src.get("button_title") or ""),
-            url=str(src.get("url") or ""),
-            photo_file_id=src.get("photo_file_id"),
-            price_minor=int(src.get("price_minor") or 0),
-            currency=str(src.get("currency") or "RUB"),
-        )
-        total = await start_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=new_campaign_id)
+        total = await restart_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=source_campaign_id)
     except ValueError as e:
         code = str(e)
-        if code == "shop_not_owned":
-            await cb.answer("Нет доступа к магазину", show_alert=True)
-            return
         if code == "no_credits":
             await cb.answer("У вас 0 доступных рассылок", show_alert=True)
+            return
+        if code in {"campaign_already_started", "campaign_not_restartable"}:
+            await cb.answer("Эту рассылку сейчас нельзя перезапустить", show_alert=True)
             return
         await cb.answer("Не удалось повторить рассылку", show_alert=True)
         return
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
+    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{source_campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
     kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(
-        f"Создана повторная рассылка #{new_campaign_id} (копия #{source_campaign_id})."
-        f"Получателей: {total}."
+        f"Рассылка #{source_campaign_id} запущена повторно. Получателей: {total}."
         "Воркер отправит сообщения в фоне.",
         reply_markup=kb.as_markup(),
     )

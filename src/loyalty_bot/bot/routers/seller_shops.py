@@ -247,8 +247,8 @@ async def seller_shops_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
-    await cb.answer()
+    # UX: сразу показываем список магазинов (если он есть), без лишнего промежуточного меню.
+    await shops_list(cb, pool)
 
 
 # Stub for unfinished section
@@ -354,7 +354,7 @@ async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     for sh in shops[:10]:
         prefix = "✅" if sh["is_active"] else "⛔️"
         kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
-    kb.button(text="⬅️ Назад", callback_data="seller:shops")
+    kb.button(text="⬅️ Назад", callback_data="seller:home")
     kb.adjust(1)
 
     await cb.message.edit_text("Ваши магазины:", reply_markup=kb.as_markup())

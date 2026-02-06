@@ -52,7 +52,6 @@ def credits_packages_menu(*, back_cb: str = "seller:home", context: str | None =
 def shops_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Создать магазин", callback_data="shops:create")
-    kb.button(text="📋 Мои магазины", callback_data="shops:list")
     kb.button(text="⬅️ Назад", callback_data="seller:home")
     kb.adjust(1)
     return kb.as_markup()

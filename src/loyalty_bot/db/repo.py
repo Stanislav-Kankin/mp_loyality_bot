@@ -1097,6 +1097,132 @@ async def start_campaign_sending(
             return total_i
 
 
+async def restart_campaign_sending(
+    pool: asyncpg.Pool,
+    *,
+    seller_tg_user_id: int,
+    campaign_id: int,
+) -> int:
+    """Restart campaign sending for an already finished campaign.
+
+    Why: in MVP we want a single campaign record in UI. Resend should not create
+    copies; instead we reset queue/statistics and start sending again.
+
+    - Verifies campaign belongs to seller.
+    - Allows status 'completed'/'sent' to be restarted.
+    - Consumes 1 seller credit atomically.
+    - Resets deliveries to 'pending' and re-enqueues new subscribers.
+    - Clears clicks (unique per campaign) and resets click_count.
+
+    Returns: total recipients count.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            camp = await conn.fetchrow(
+                """
+                SELECT c.id, c.shop_id, c.status, s.id AS seller_id
+                FROM campaigns c
+                JOIN shops sh ON sh.id = c.shop_id
+                JOIN sellers s ON s.id = sh.seller_id
+                WHERE s.tg_user_id=$1 AND c.id=$2
+                FOR UPDATE;
+                """,
+                seller_tg_user_id,
+                campaign_id,
+            )
+            if camp is None:
+                raise ValueError("campaign_not_found")
+
+            status = str(camp["status"] or "")
+            # Only finished campaigns can be restarted via resend.
+            if status not in {"completed", "sent"}:
+                raise ValueError("campaign_not_restartable")
+
+            seller_id = int(camp["seller_id"])
+
+            # Consume 1 credit.
+            bal = await conn.fetchrow(
+                """
+                UPDATE seller_credits
+                SET balance = balance - 1,
+                    updated_at = now()
+                WHERE seller_id=$1 AND balance > 0
+                RETURNING balance;
+                """,
+                seller_id,
+            )
+            if bal is None:
+                raise ValueError("no_credits")
+            new_balance = int(bal["balance"])
+
+            await conn.execute(
+                """
+                INSERT INTO seller_credit_transactions(
+                    seller_id, delta, reason, created_at,
+                    campaign_id, balance_after
+                )
+                VALUES ($1, -1, 'campaign_resend', now(), $2, $3);
+                """,
+                seller_id,
+                campaign_id,
+                new_balance,
+            )
+
+            # Reset deliveries for this campaign to run again.
+            await conn.execute(
+                """
+                UPDATE campaign_deliveries
+                SET status='pending',
+                    attempt_count=0,
+                    next_attempt_at=now(),
+                    last_error=NULL,
+                    sent_at=NULL,
+                    tg_message_id=NULL
+                WHERE campaign_id=$1;
+                """,
+                campaign_id,
+            )
+
+            # Enqueue deliveries for new subscribers.
+            await conn.execute(
+                """
+                INSERT INTO campaign_deliveries(campaign_id, customer_id, status, next_attempt_at)
+                SELECT $1, sc.customer_id, 'pending', now()
+                FROM shop_customers sc
+                WHERE sc.shop_id=$2 AND sc.status='subscribed'
+                ON CONFLICT (campaign_id, customer_id) DO NOTHING;
+                """,
+                campaign_id,
+                int(camp["shop_id"]),
+            )
+
+            # Clear unique clicks (otherwise stats will accumulate across runs).
+            await conn.execute("DELETE FROM clicks WHERE campaign_id=$1;", campaign_id)
+
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM campaign_deliveries WHERE campaign_id=$1;",
+                campaign_id,
+            )
+            total_i = int(total or 0)
+
+            await conn.execute(
+                """
+                UPDATE campaigns
+                SET status='sending',
+                    total_recipients=$2,
+                    sent_count=0,
+                    failed_count=0,
+                    blocked_count=0,
+                    click_count=0
+                WHERE id=$1;
+                """,
+                campaign_id,
+                total_i,
+            )
+
+            return total_i
+
+
 async def lease_due_deliveries(
     pool: asyncpg.Pool,
     *,
