@@ -115,6 +115,7 @@ async def trial_feedback_text(message: Message, state: FSMContext, pool) -> None
             answer="no",
             feedback_text=text,
         )
+
     except Exception:
         logger.exception("failed to save trial feedback")
 
