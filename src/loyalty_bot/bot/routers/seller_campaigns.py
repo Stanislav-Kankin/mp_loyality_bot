@@ -334,11 +334,8 @@ async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
 
 def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    # IMPORTANT: callbacks must match router handlers below.
-    # - create: shop:campaigns:new:<shop_id>
-    # - list:   shop:campaigns:list:<shop_id>
-    kb.button(text="➕ Создать рассылку", callback_data=f"shop:campaigns:new:{shop_id}")
-    kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
+    kb.button(text="➕ Создать рассылку", callback_data=f"campaign:create:{shop_id}")
+    kb.button(text="📋 Мои рассылки", callback_data=f"campaign:list:{shop_id}")
     kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
     kb.adjust(1, 1, 1)
     return kb
@@ -1018,6 +1015,12 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Кампания не найдена", show_alert=True)
         return
 
+    try:
+        shop_id = int(src["shop_id"])
+    except (KeyError, TypeError, ValueError):
+        await cb.answer("Не удалось определить магазин кампании", show_alert=True)
+        return
+
     credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
     if credits <= 0:
         await cb.message.edit_text(
@@ -1032,7 +1035,7 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         new_campaign_id = await create_campaign_draft(
             pool,
             seller_tg_user_id=tg_id,
-            shop_id=int(src["shop_id"]),
+            shop_id=shop_id,
             text=str(src.get("text") or ""),
             button_title=str(src.get("button_title") or ""),
             url=str(src.get("url") or ""),
