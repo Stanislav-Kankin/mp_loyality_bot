@@ -247,8 +247,8 @@ async def seller_shops_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    # UX: сразу показываем список магазинов (если он есть), без лишнего промежуточного меню.
-    await shops_list(cb, pool)
+    await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
+    await cb.answer()
 
 
 # Stub for unfinished section
@@ -351,10 +351,11 @@ async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
     kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Создать магазин", callback_data="shops:create")
     for sh in shops[:10]:
         prefix = "✅" if sh["is_active"] else "⛔️"
         kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
-    kb.button(text="⬅️ Назад", callback_data="seller:home")
+    kb.button(text="⬅️ Назад", callback_data="seller:shops")
     kb.adjust(1)
 
     await cb.message.edit_text("Ваши магазины:", reply_markup=kb.as_markup())

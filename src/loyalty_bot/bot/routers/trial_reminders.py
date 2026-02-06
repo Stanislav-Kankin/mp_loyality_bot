@@ -20,9 +20,9 @@ class TrialFeedback(StatesGroup):
 
 
 def _admins() -> list[int]:
-    # settings.telegram_admin_ids is expected to be list[int]
+    # Read admins from Settings (ADMIN_TG_IDS in .env)
     try:
-        return [int(x) for x in (settings.telegram_admin_ids or [])]
+        return sorted(settings.admin_ids_set)
     except Exception:
         return []
 
@@ -30,7 +30,7 @@ def _admins() -> list[int]:
 async def _notify_admins_about_lead(*, bot, tg_user_id: int, username: str | None, text: str) -> None:
     admins = _admins()
     if not admins:
-        logger.warning("no admins configured for trial leads (TELEGRAM_ADMIN_IDS is empty)")
+        logger.warning("no admins configured for trial leads (ADMIN_TG_IDS is empty)")
         return
 
     for admin_id in admins:
