@@ -6,6 +6,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
 from loyalty_bot.db import repo
@@ -20,11 +21,19 @@ class TrialFeedback(StatesGroup):
 
 
 def _admins() -> list[int]:
-    # Read admins from Settings (ADMIN_TG_IDS in .env)
+    # Source of truth: ADMIN_TG_IDS in .env -> settings.admin_ids_set
     try:
         return sorted(settings.admin_ids_set)
     except Exception:
         return []
+
+
+def _open_chat_kb(*, tg_user_id: int) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    # Telegram deep-link to open chat with user.
+    kb.button(text="💬 Открыть чат", url=f"tg://user?id={tg_user_id}")
+    kb.adjust(1)
+    return kb
 
 
 async def _notify_admins_about_lead(*, bot, tg_user_id: int, username: str | None, text: str) -> None:
@@ -35,7 +44,7 @@ async def _notify_admins_about_lead(*, bot, tg_user_id: int, username: str | Non
 
     for admin_id in admins:
         try:
-            await bot.send_message(admin_id, text)
+            await bot.send_message(admin_id, text, reply_markup=_open_chat_kb(tg_user_id=tg_user_id).as_markup())
         except Exception:
             logger.exception("failed to notify admin_id=%s", admin_id)
 
@@ -48,15 +57,12 @@ async def trial_day5_want(call: CallbackQuery) -> None:
     u = call.from_user
     username = f"@{u.username}" if u and u.username else "(no username)"
     await call.answer("Ок")
-    await call.message.answer(
-        "✅ Отлично! Напишите нам вне бота, чтобы мы запустили для вас персонального бота.\n"
-        "Токен в боте не запрашиваем (создадите в BotFather и передадите вне бота)."
-    )
+    await call.message.answer("✅ Спасибо, ваша заявка принята! Скоро свяжемся с вами в Telegram.")
     await _notify_admins_about_lead(
         bot=call.bot,
         tg_user_id=u.id,
         username=u.username,
-        text=f"🟩 Лид (day5): tg_user_id={u.id} {username}",
+        text=f"🟩 Заявка (day5): tg_user_id={u.id} {username}",
     )
 
 
@@ -77,15 +83,12 @@ async def trial_day7_want(call: CallbackQuery) -> None:
     u = call.from_user
     username = f"@{u.username}" if u and u.username else "(no username)"
     await call.answer("Ок")
-    await call.message.answer(
-        "✅ Заявка принята. Мы свяжемся с вами вне бота.\n"
-        "Токен в боте не запрашиваем."
-    )
+    await call.message.answer("✅ Спасибо, ваша заявка принята! Скоро свяжемся с вами в Telegram.")
     await _notify_admins_about_lead(
         bot=call.bot,
         tg_user_id=u.id,
         username=u.username,
-        text=f"🟩 Лид (day7): tg_user_id={u.id} {username}",
+        text=f"🟩 Заявка (day7): tg_user_id={u.id} {username}",
     )
 
 

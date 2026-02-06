@@ -11,11 +11,13 @@ def seller_main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     kb.button(text="🏪 Магазины", callback_data="seller:shops")
     kb.button(text="📣 Рассылки", callback_data="seller:campaigns")
     kb.button(text="💰 Купить рассылки", callback_data="credits:menu")
+    # Info is useful both in DEMO and in BRAND bots.
+    kb.button(text="ℹ️ INFO", callback_data="trial:info")
     if is_admin:
         kb.button(text="🛠 Админка", callback_data="admin:home")
-        kb.adjust(1, 2, 2)
+        kb.adjust(1, 2, 1, 1)
     else:
-        kb.adjust(1, 2, 1)
+        kb.adjust(1, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -52,6 +54,7 @@ def credits_packages_menu(*, back_cb: str = "seller:home", context: str | None =
 def shops_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Создать магазин", callback_data="shops:create")
+    kb.button(text="📋 Мои магазины", callback_data="shops:list")
     kb.button(text="⬅️ Назад", callback_data="seller:home")
     kb.adjust(1)
     return kb.as_markup()
