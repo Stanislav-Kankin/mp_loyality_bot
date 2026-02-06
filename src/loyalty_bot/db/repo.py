@@ -75,6 +75,27 @@ async def get_seller_trial(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dic
         }
 
 
+
+
+async def count_seller_started_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
+    """Count campaigns that have been started (i.e., not drafts) for the seller.
+
+    We treat a campaign as "started" when it left 'draft' status.
+    Used to enforce DEMO limits (e.g., max 3 sends).
+    """
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1
+              AND c.status IN ('sending', 'completed', 'sent');
+            """,
+            seller_tg_user_id,
+        )
+        return int(val or 0)
 async def set_seller_trial_started(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dict:
     """Start trial if not started yet (idempotent).
 
