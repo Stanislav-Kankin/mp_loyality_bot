@@ -1602,3 +1602,78 @@ async def get_admin_seller_details(pool: asyncpg.Pool, *, tg_user_id: int) -> di
             "spent_total": int(row["spent_total"] or 0),
             "last_campaign_at": row["last_campaign_at"],
         }
+# -------------------------
+# DEMO trial reminders (day 5 / day 7) + feedback
+# -------------------------
+
+async def list_due_trial_day5_reminders(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Sellers with trial_started_at older than 5 days and not notified yet."""
+    q = """
+        SELECT tg_user_id, trial_started_at
+        FROM sellers
+        WHERE trial_started_at IS NOT NULL
+          AND trial_day5_notified_at IS NULL
+          AND now() >= trial_started_at + interval '5 days'
+        ORDER BY trial_started_at ASC
+        LIMIT $1;
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(q, limit)
+    return [dict(r) for r in rows]
+
+
+async def list_due_trial_day7_reminders(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Sellers with trial_started_at older than 7 days and not notified yet."""
+    q = """
+        SELECT tg_user_id, trial_started_at
+        FROM sellers
+        WHERE trial_started_at IS NOT NULL
+          AND trial_day7_notified_at IS NULL
+          AND now() >= trial_started_at + interval '7 days'
+        ORDER BY trial_started_at ASC
+        LIMIT $1;
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(q, limit)
+    return [dict(r) for r in rows]
+
+
+async def mark_trial_day5_notified(pool: asyncpg.Pool, tg_user_id: int) -> None:
+    q = """
+        UPDATE sellers
+        SET trial_day5_notified_at = now()
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id)
+
+
+async def mark_trial_day7_notified(pool: asyncpg.Pool, tg_user_id: int) -> None:
+    q = """
+        UPDATE sellers
+        SET trial_day7_notified_at = now()
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id)
+
+
+async def save_trial_feedback(
+    pool: asyncpg.Pool,
+    tg_user_id: int,
+    *,
+    stage: str,
+    answer: str,
+    feedback_text: str | None,
+) -> None:
+    """Persist feedback/lead decisions from day5/day7 trial reminders."""
+    q = """
+        UPDATE sellers
+        SET trial_feedback_at = now(),
+            trial_feedback_stage = $2,
+            trial_feedback_answer = $3,
+            trial_feedback_text = $4
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id, stage, answer, feedback_text)
