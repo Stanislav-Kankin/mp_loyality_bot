@@ -334,8 +334,8 @@ async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
 
 def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать рассылку", callback_data=f"campaign:create:{shop_id}")
-    kb.button(text="📋 Мои рассылки", callback_data=f"campaign:list:{shop_id}")
+    kb.button(text="➕ Создать рассылку", callback_data=f"shop:campaigns:new:{shop_id}")
+    kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
     kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
     kb.adjust(1, 1, 1)
     return kb
@@ -986,12 +986,13 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+    
     shop_id: int | None = None
-    if camp is not None and camp.get("shop_id") is not None:
-        try:
+    try:
+        if camp is not None and camp.get("shop_id") is not None:
             shop_id = int(camp["shop_id"])
-        except (TypeError, ValueError):
-            shop_id = None
+    except (TypeError, ValueError, KeyError):
+        shop_id = None
 
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{campaign_id}")
@@ -1000,7 +1001,8 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.message.answer(
-        f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
+        f"Рассылка #{campaign_id} запущена. Получателей: {total}.
+"
         "Воркер отправит сообщения в фоне.",
         reply_markup=kb.as_markup(),
     )
@@ -1032,12 +1034,20 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer()
         return
 
+    shop_id: int | None = None
+    try:
+        shop_id = int(src["shop_id"])
+    except (TypeError, ValueError, KeyError):
+        shop_id = None
+        await cb.answer("Не удалось определить магазин кампании", show_alert=True)
+        return
+
     # Create a new draft as a copy and start sending immediately.
     try:
         new_campaign_id = await create_campaign_draft(
             pool,
             seller_tg_user_id=tg_id,
-            shop_id=int(src["shop_id"]),
+            shop_id=shop_id,
             text=str(src.get("text") or ""),
             button_title=str(src.get("button_title") or ""),
             url=str(src.get("url") or ""),
@@ -1060,8 +1070,7 @@ async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     kb = InlineKeyboardBuilder()
     kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{new_campaign_id}")
     kb.button(text="📋 К списку", callback_data="campaigns:list")
-    if shop_id is not None:
-        kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
 
     await cb.answer("Запущено ✅")
     await cb.message.answer(
