@@ -247,7 +247,27 @@ async def seller_shops_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
+
+    shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    # Always show the "Create shop" button (in DEMO it will be blocked after 1 shop).
+    kb.button(text="➕ Создать магазин", callback_data="shops:create")
+
+    if shops:
+        for sh in shops[:10]:
+            prefix = "✅" if sh["is_active"] else "⛔️"
+            kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
+        title = "Ваши магазины:"
+    else:
+        title = "У вас пока нет магазинов."
+
+    kb.button(text="⬅️ Назад", callback_data="seller:home")
+    kb.adjust(1)
+
+    await cb.message.edit_text(title, reply_markup=kb.as_markup())
     await cb.answer()
 
 
@@ -337,30 +357,11 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
 
 @router.callback_query(F.data == "shops:list")
 async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if not await _is_seller(pool, tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
+    """Backward-compatible handler for old keyboard button "📋 Мои магазины".
 
-    shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
-    if not shops:
-        await cb.message.edit_text("У вас пока нет магазинов.", reply_markup=shops_menu())
-        await cb.answer()
-        return
-
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать магазин", callback_data="shops:create")
-    for sh in shops[:10]:
-        prefix = "✅" if sh["is_active"] else "⛔️"
-        kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
-    kb.button(text="⬅️ Назад", callback_data="seller:shops")
-    kb.adjust(1)
-
-    await cb.message.edit_text("Ваши магазины:", reply_markup=kb.as_markup())
-    await cb.answer()
-
+    New UX: open shops list directly from seller:shops.
+    """
+    await seller_shops_cb(cb, pool)
 
 @router.callback_query(F.data.startswith("shop:open:"))
 async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
