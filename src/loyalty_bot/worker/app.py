@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import time
 
 import asyncpg
 from aiogram import Bot
@@ -35,6 +36,7 @@ from loyalty_bot.db.repo import (
     mark_trial_day7_notified,
 )
 from loyalty_bot.logging_setup import setup_logging
+from loyalty_bot.metrics.central import create_central_pool, push_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,9 @@ async def main() -> None:
 
     bot = Bot(token=settings.bot_token)
 
+    central_pool = await create_central_pool()
+    last_hb = 0.0
+
     # Simple global rate limiter: minimum delay between messages.
     rate = max(1, int(settings.tg_global_rate_per_sec))
     min_delay = 1.0 / float(rate)
@@ -231,6 +236,16 @@ async def main() -> None:
 
     try:
         while True:
+            # Heartbeat to SuperAdmin central DB (optional).
+            if central_pool is not None:
+                now_m = time.monotonic()
+                if now_m - last_hb >= float(getattr(settings, "metrics_push_interval_seconds", 60)):
+                    try:
+                        await push_heartbeat(central_pool, service="worker")
+                    except Exception:
+                        logger.exception("failed to push worker heartbeat")
+                    last_hb = now_m
+
             items = await lease_due_deliveries(pool, batch_size=int(settings.send_batch_size))
             if not items:
                 # Still try to finalize campaigns periodically.
@@ -254,6 +269,10 @@ async def main() -> None:
     finally:
         await bot.session.close()
         await pool.close()
+        if central_pool is not None:
+            await central_pool.close()
+        if central_pool is not None:
+            await central_pool.close()
 
 
 if __name__ == "__main__":

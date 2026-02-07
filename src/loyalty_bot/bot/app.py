@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import time
 
 from aiogram import Bot, Dispatcher
 
@@ -19,6 +20,7 @@ from loyalty_bot.bot.routers.payments import router as payments_router
 from loyalty_bot.bot.routers.admin_shops import router as admin_shops_router
 from loyalty_bot.bot.routers.admin_panel import router as admin_panel_router
 from loyalty_bot.bot.routers.fallback import router as fallback_router
+from loyalty_bot.metrics.central import create_central_pool, push_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,23 @@ async def main() -> None:
         await apply_migrations(conn, pathlib.Path("/app/migrations"))
 
     bot = Bot(token=settings.bot_token)
+
+    central_pool = await create_central_pool()
+    hb_task: asyncio.Task[None] | None = None
+    if central_pool is not None:
+        async def _hb_loop() -> None:
+            last = 0.0
+            while True:
+                now_m = time.monotonic()
+                if now_m - last >= float(getattr(settings, "metrics_push_interval_seconds", 60)):
+                    try:
+                        await push_heartbeat(central_pool, service="bot")
+                    except Exception:
+                        logger.exception("failed to push bot heartbeat")
+                    last = now_m
+                await asyncio.sleep(1.0)
+
+        hb_task = asyncio.create_task(_hb_loop())
     dp = Dispatcher()
     dp.update.middleware(DbMiddleware(pool))
 
@@ -48,8 +67,16 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if hb_task is not None:
+            hb_task.cancel()
+            try:
+                await hb_task
+            except Exception:
+                pass
         await bot.session.close()
         await pool.close()
+        if central_pool is not None:
+            await central_pool.close()
 
 
 if __name__ == "__main__":

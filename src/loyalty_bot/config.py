@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_dir: str = "/app/logs"
 
+    # --- SuperAdmin / Central metrics (optional) ---
+    # If CENTRAL_DATABASE_DSN is not set, metrics push is disabled (no impact on bot/worker).
+    central_database_dsn: str = Field(default="", alias="CENTRAL_DATABASE_DSN")
+    # Unique id/name of this instance in SuperAdmin registry (recommended for brand bots).
+    instance_id: str = Field(default="", alias="INSTANCE_ID")
+    instance_name: str = Field(default="", alias="INSTANCE_NAME")
+    metrics_push_interval_seconds: int = Field(default=60, alias="METRICS_PUSH_INTERVAL_SECONDS")
+
     @staticmethod
     def _parse_ids(value: str) -> set[int]:
         raw = (value or "").strip()
