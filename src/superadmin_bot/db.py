@@ -70,7 +70,8 @@ async def list_instances(
     # $4: offset
     mode_cond = "($1::text IS NULL OR i.mode = $1::text)"
     # alive if max(bot_last_seen, worker_last_seen) is within window
-    status_cond = "TRUE"
+    # IMPORTANT: keep $2 placeholder present for *all* statuses (asyncpg binds args by placeholder count).
+    status_cond = "(TRUE OR $2::int IS NOT NULL)"
     if status == "alive":
         status_cond = "last_seen_at >= (now() - ($2::int * interval '1 minute'))"
     elif status == "dead":
