@@ -70,3 +70,50 @@ async def push_heartbeat(pool: asyncpg.Pool, *, service: str) -> None:
             str(service),
             now,
         )
+
+
+async def push_instance_metrics(
+    central_pool: asyncpg.Pool,
+    *,
+    campaigns_total: int,
+    campaigns_today: int,
+    deliveries_sent_today: int,
+    deliveries_failed_today: int,
+    deliveries_blocked_today: int,
+    subscribers_active: int,
+) -> None:
+    """Upsert latest aggregated metrics for instance (no PII)."""
+    instance_id = (settings.instance_id or "").strip()
+    if not instance_id:
+        return
+
+    now = _utc_now()
+    async with central_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO instance_metrics(
+                instance_id, updated_at,
+                campaigns_total, campaigns_today,
+                deliveries_sent_today, deliveries_failed_today, deliveries_blocked_today,
+                subscribers_active
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (instance_id)
+            DO UPDATE SET
+                updated_at = EXCLUDED.updated_at,
+                campaigns_total = EXCLUDED.campaigns_total,
+                campaigns_today = EXCLUDED.campaigns_today,
+                deliveries_sent_today = EXCLUDED.deliveries_sent_today,
+                deliveries_failed_today = EXCLUDED.deliveries_failed_today,
+                deliveries_blocked_today = EXCLUDED.deliveries_blocked_today,
+                subscribers_active = EXCLUDED.subscribers_active;
+            """,
+            instance_id,
+            now,
+            int(campaigns_total),
+            int(campaigns_today),
+            int(deliveries_sent_today),
+            int(deliveries_failed_today),
+            int(deliveries_blocked_today),
+            int(subscribers_active),
+        )

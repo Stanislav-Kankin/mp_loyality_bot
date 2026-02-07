@@ -19,6 +19,17 @@ def _fmt_ts(ts) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fmt_metrics(r) -> str:
+    if r.get("metrics_at") is None:
+        return "метрики: —"
+    return (
+        f"метрики: {_fmt_ts(r['metrics_at'])}\n"
+        f"кампании: {int(r['campaigns_total'] or 0)} (сегодня {int(r['campaigns_today'] or 0)})\n"
+        f"доставки сегодня: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}\n"
+        f"подписчики активные: {int(r['subscribers_active'] or 0)}"
+    )
+
+
 async def main() -> None:
     settings = load_settings()
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -53,7 +64,8 @@ async def main() -> None:
                 f"\n• {r['instance_name']} ({r['mode']})\n"
                 f"  id: {r['instance_id']}\n"
                 f"  bot: {_fmt_ts(r['bot_last_seen'])}\n"
-                f"  worker: {_fmt_ts(r['worker_last_seen'])}"
+                f"  worker: {_fmt_ts(r['worker_last_seen'])}\n"
+                f"  {_fmt_metrics(r)}"
             )
         await message.answer("\n".join(lines))
 

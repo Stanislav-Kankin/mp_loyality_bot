@@ -36,7 +36,7 @@ from loyalty_bot.db.repo import (
     mark_trial_day7_notified,
 )
 from loyalty_bot.logging_setup import setup_logging
-from loyalty_bot.metrics.central import create_central_pool, push_heartbeat
+from loyalty_bot.metrics.central import create_central_pool, push_heartbeat, push_instance_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,30 @@ async def main() -> None:
                 if now_m - last_hb >= float(getattr(settings, "metrics_push_interval_seconds", 60)):
                     try:
                         await push_heartbeat(central_pool, service="worker")
+
+                        # Aggregated metrics snapshot (no PII). Safe to fail silently.
+                        async with pool.acquire() as conn:
+                            row = await conn.fetchrow(
+                                """
+                                SELECT
+                                    (SELECT COUNT(*) FROM campaigns) AS campaigns_total,
+                                    (SELECT COUNT(*) FROM campaigns WHERE created_at >= date_trunc('day', now())) AS campaigns_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'sent' AND sent_at >= date_trunc('day', now())) AS deliveries_sent_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'failed' AND next_attempt_at >= date_trunc('day', now())) AS deliveries_failed_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'blocked' AND next_attempt_at >= date_trunc('day', now())) AS deliveries_blocked_today,
+                                    (SELECT COUNT(*) FROM shop_customers WHERE status = 'subscribed') AS subscribers_active;
+                                """
+                            )
+                        if row is not None:
+                            await push_instance_metrics(
+                                central_pool,
+                                campaigns_total=int(row["campaigns_total"] or 0),
+                                campaigns_today=int(row["campaigns_today"] or 0),
+                                deliveries_sent_today=int(row["deliveries_sent_today"] or 0),
+                                deliveries_failed_today=int(row["deliveries_failed_today"] or 0),
+                                deliveries_blocked_today=int(row["deliveries_blocked_today"] or 0),
+                                subscribers_active=int(row["subscribers_active"] or 0),
+                            )
                     except Exception:
                         logger.exception("failed to push worker heartbeat")
                     last_hb = now_m
