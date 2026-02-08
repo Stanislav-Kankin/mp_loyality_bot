@@ -15,7 +15,7 @@ from superadmin_bot.db import (
     create_pool,
     ensure_schema,
     get_instance,
-    get_period_metrics,
+    get_instance_metrics_for_period,
     list_instances,
 )
 
@@ -70,44 +70,27 @@ def _section_label(section: str) -> str:
     }.get(section, section)
 
 
-def _fmt_metrics(*, r: dict[str, object], section: str, period: str, period_metrics: dict[str, object] | None = None) -> str:
-    metrics_at = (period_metrics or {}).get("metrics_at") or r.get("metrics_at")
-    if metrics_at is None:
-        metrics_at_s = "—"
-    else:
-        metrics_at_s = _fmt_ts(metrics_at)
-
-    subscribers_active = int(r.get("subscribers_active") or 0)
-
-    # Defaults: today from instance_metrics row
-    campaigns_today = int(r.get("campaigns_today") or 0)
-    deliveries_sent_today = int(r.get("deliveries_sent_today") or 0)
-    deliveries_failed_today = int(r.get("deliveries_failed_today") or 0)
-    deliveries_blocked_today = int(r.get("deliveries_blocked_today") or 0)
-
-    if period in {"7d", "all"} and period_metrics is not None:
-        campaigns_today = int(period_metrics.get("campaigns_created") or 0)
-        deliveries_sent_today = int(period_metrics.get("deliveries_sent") or 0)
-        deliveries_failed_today = int(period_metrics.get("deliveries_failed") or 0)
-        deliveries_blocked_today = int(period_metrics.get("deliveries_blocked") or 0)
-
-    campaigns_total = int(r.get("campaigns_total") or 0)
+def _fmt_metrics(*, r, section: str, period: str) -> str:
+    """Render metrics block for selected section/period."""
+    if r.get("metrics_at") is None:
+        return "метрики: —"
 
     if section == "customers":
-        return f"👥 Клиенты\n• активные подписчики: {subscribers_active}\n• метрики: {metrics_at_s}"
-
-    if section == "campaigns":
-        period_label = _period_label(period)
         return (
-            f"📣 Рассылки ({period_label})\n"
-            f"• кампании: всего {campaigns_total}\n"
-            f"• создано за период: {campaigns_today}\n"
-            f"• доставки: ✅ {deliveries_sent_today} / ❌ {deliveries_failed_today} / 🚫 {deliveries_blocked_today}\n"
-            f"• активные подписчики: {subscribers_active}\n"
-            f"• метрики: {metrics_at_s}"
+            f"👥 Покупатели ({_period_label(period)})\n"
+            f"• активные подписчики: {int(r.get('subscribers_active') or 0)}"
         )
 
-    return f"метрики: {metrics_at_s}"
+    # default: campaigns
+    return (
+        f"📣 Рассылки ({_period_label(period)})\n"
+        f"• кампании: всего {int(r.get('campaigns_total') or 0)}, за период {int(r.get('campaigns_today') or 0)}\n"
+        f"• доставки: ✅ {int(r.get('deliveries_sent_today') or 0)} / ❌ {int(r.get('deliveries_failed_today') or 0)} / 🚫 {int(r.get('deliveries_blocked_today') or 0)}\n"
+        f"• активные подписчики: {int(r.get('subscribers_active') or 0)}"
+    )
+
+
+
 def _instance_status_icon(r) -> str:
     # "alive" if bot or worker was seen recently.
     ts = r.get("bot_last_seen") or r.get("worker_last_seen")
@@ -224,9 +207,9 @@ async def _render_instance_card(
         await cb.answer("Инстанс не найден", show_alert=True)
         return
 
-    period_metrics: dict[str, object] | None = None
-    if period in {"7d", "all"}:
-        period_metrics = await get_period_metrics(pool, instance_id=instance_id, period=period)
+    # Replace "today" metrics with selected period aggregates (7d/all) when available.
+    metrics = await get_instance_metrics_for_period(pool, instance_id=instance_id, period=period)
+    r = {**dict(r), **metrics}
 
     icon = _instance_status_icon(r)
     text = (

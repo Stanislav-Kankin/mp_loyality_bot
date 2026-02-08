@@ -82,12 +82,17 @@ async def push_instance_metrics(
     deliveries_blocked_today: int,
     subscribers_active: int,
 ) -> None:
-    """Upsert latest aggregated metrics for instance (no PII)."""
+    """Upsert latest aggregated metrics for instance (no PII).
+
+    Also writes a daily snapshot into `instance_metrics_daily` (if present in central DB).
+    This enables period-based aggregates in SuperAdmin (e.g. last 7 days / all time).
+    """
     instance_id = (settings.instance_id or "").strip()
     if not instance_id:
         return
 
     now = _utc_now()
+    metric_date = now.date()  # UTC date
     async with central_pool.acquire() as conn:
         await conn.execute(
             """
@@ -118,27 +123,34 @@ async def push_instance_metrics(
             int(subscribers_active),
         )
 
-        await conn.execute(
-            """
-            INSERT INTO instance_metrics_daily(
-                instance_id, metric_date, updated_at,
-                campaigns_today,
-                deliveries_sent_today, deliveries_failed_today, deliveries_blocked_today
+        # Best-effort daily snapshot. Must not break client bots if schema isn't deployed yet.
+        try:
+            await conn.execute(
+                """
+                INSERT INTO instance_metrics_daily(
+                    instance_id, metric_date, updated_at,
+                    campaigns_today,
+                    deliveries_sent_today, deliveries_failed_today, deliveries_blocked_today,
+                    subscribers_active
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (instance_id, metric_date)
+                DO UPDATE SET
+                    updated_at = EXCLUDED.updated_at,
+                    campaigns_today = GREATEST(instance_metrics_daily.campaigns_today, EXCLUDED.campaigns_today),
+                    deliveries_sent_today = GREATEST(instance_metrics_daily.deliveries_sent_today, EXCLUDED.deliveries_sent_today),
+                    deliveries_failed_today = GREATEST(instance_metrics_daily.deliveries_failed_today, EXCLUDED.deliveries_failed_today),
+                    deliveries_blocked_today = GREATEST(instance_metrics_daily.deliveries_blocked_today, EXCLUDED.deliveries_blocked_today),
+                    subscribers_active = EXCLUDED.subscribers_active;
+                """,
+                instance_id,
+                metric_date,
+                now,
+                int(campaigns_today),
+                int(deliveries_sent_today),
+                int(deliveries_failed_today),
+                int(deliveries_blocked_today),
+                int(subscribers_active),
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (instance_id, metric_date)
-            DO UPDATE SET
-                updated_at = EXCLUDED.updated_at,
-                campaigns_today = GREATEST(instance_metrics_daily.campaigns_today, EXCLUDED.campaigns_today),
-                deliveries_sent_today = GREATEST(instance_metrics_daily.deliveries_sent_today, EXCLUDED.deliveries_sent_today),
-                deliveries_failed_today = GREATEST(instance_metrics_daily.deliveries_failed_today, EXCLUDED.deliveries_failed_today),
-                deliveries_blocked_today = GREATEST(instance_metrics_daily.deliveries_blocked_today, EXCLUDED.deliveries_blocked_today);
-            """,
-            instance_id,
-            now.date(),
-            now,
-            int(campaigns_today),
-            int(deliveries_sent_today),
-            int(deliveries_failed_today),
-            int(deliveries_blocked_today),
-        )
+        except Exception:
+            logger.debug("instance_metrics_daily is not available (ignored)")
