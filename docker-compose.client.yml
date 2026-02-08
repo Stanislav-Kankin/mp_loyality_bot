@@ -18,25 +18,34 @@ services:
     build: .
     restart: unless-stopped
     env_file:
-      - .env
+      - ${CLIENT_ENV_FILE:-.env}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./logs:/app/logs
+    networks:
+      - central_net
     command: ["python", "-m", "loyalty_bot.bot.app"]
 
   worker:
     build: .
     restart: unless-stopped
     env_file:
-      - .env
+      - ${CLIENT_ENV_FILE:-.env}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./logs:/app/logs
+    networks:
+      - central_net
     command: ["python", "-m", "loyalty_bot.worker.app"]
 
 volumes:
   pg_data:
+
+networks:
+  central_net:
+    external: true
+    name: ${CENTRAL_NET_NAME:-mp_central_net}

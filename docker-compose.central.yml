@@ -8,6 +8,8 @@ services:
       POSTGRES_PASSWORD: ${CENTRAL_POSTGRES_PASSWORD:-central_loyalty_password}
     volumes:
       - central_pg_data:/var/lib/postgresql/data
+    networks:
+      - central_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${CENTRAL_POSTGRES_USER:-central_loyalty} -d ${CENTRAL_POSTGRES_DB:-central_loyalty}"]
       interval: 5s
@@ -18,7 +20,9 @@ services:
     build: .
     restart: unless-stopped
     env_file:
-      - .env.superadmin
+      - ${SUPERADMIN_ENV_FILE:-.env.superadmin}
+    networks:
+      - central_net
     depends_on:
       central_postgres:
         condition: service_healthy
