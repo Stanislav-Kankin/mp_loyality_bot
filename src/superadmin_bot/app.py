@@ -75,19 +75,15 @@ def _fmt_metrics(*, r, section: str, period: str) -> str:
 
     if section == "customers":
         return (
-            f"👥 Покупатели ({_period_label(period)}{period_note})
-"
+            f"👥 Покупатели ({_period_label(period)}{period_note})"
             f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
         )
 
     # default: campaigns
     return (
-        f"📣 Рассылки ({_period_label(period)}{period_note})
-"
-        f"• кампании: всего {int(r['campaigns_total'] or 0)}, сегодня {int(r['campaigns_today'] or 0)}
-"
-        f"• доставки: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}
-"
+        f"📣 Рассылки ({_period_label(period)}{period_note})"
+        f"• кампании: всего {int(r['campaigns_total'] or 0)}, сегодня {int(r['campaigns_today'] or 0)}"
+        f"• доставки: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}"
         f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
     )
 
