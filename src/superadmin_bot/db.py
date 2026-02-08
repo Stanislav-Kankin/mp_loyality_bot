@@ -12,11 +12,15 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
 
 
 async def ensure_schema(pool: asyncpg.Pool) -> None:
-    """Create minimal schema for SuperAdmin MVP.
+    """Create/upgrade minimal schema for SuperAdmin MVP.
 
-    Only contains instance registry and heartbeats. No PII.
+    IMPORTANT: Central DB can be long-lived. We must be able to add new columns
+    without breaking existing installs.
+
+    Only contains instance registry + heartbeats + aggregated metrics. No PII.
     """
     async with pool.acquire() as conn:
+        # 1) Create base tables.
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS instances (
@@ -57,6 +61,21 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
                 subscribers_active BIGINT NOT NULL DEFAULT 0,
                 PRIMARY KEY (instance_id, metric_date)
             );
+            """
+        )
+
+        # 2) Schema upgrades for existing installations.
+        # NOTE: asyncpg executes one statement at a time reliably; we keep them separate.
+        await conn.execute(
+            """
+            ALTER TABLE IF EXISTS instance_metrics
+                ADD COLUMN IF NOT EXISTS subscribers_active BIGINT NOT NULL DEFAULT 0;
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE IF EXISTS instance_metrics_daily
+                ADD COLUMN IF NOT EXISTS subscribers_active BIGINT NOT NULL DEFAULT 0;
             """
         )
 
@@ -102,7 +121,6 @@ async def get_instance_metrics_for_period(
         # For period aggregates we sum daily snapshots.
         # campaigns_total should remain "all time" from instance_metrics.
         date_cond = "TRUE"
-        args: list[object] = [instance_id]
         if period == "7d":
             date_cond = "metric_date >= (CURRENT_DATE - INTERVAL '6 days')"
 
@@ -117,7 +135,7 @@ async def get_instance_metrics_for_period(
             FROM instance_metrics_daily
             WHERE instance_id = $1 AND {date_cond};
             """,
-            *args,
+            instance_id,
         )
 
         out = dict(base)
