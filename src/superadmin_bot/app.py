@@ -48,15 +48,49 @@ def _fmt_ts(ts) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _fmt_metrics(r) -> str:
+def _period_label(period: str) -> str:
+    return {
+        "today": "сегодня",
+        "7d": "7 дней",
+        "all": "всё время",
+    }.get(period, period)
+
+
+def _section_label(section: str) -> str:
+    return {
+        "campaigns": "📣 Рассылки",
+        "customers": "👥 Покупатели",
+    }.get(section, section)
+
+
+def _fmt_metrics(*, r, section: str, period: str) -> str:
+    """Render metrics block. In SA-5 we only have 'today' counters in DB."""
     if r.get("metrics_at") is None:
         return "метрики: —"
+
+    # Note: central schema currently stores only 'today' counters.
+    period_note = ""
+    if period != "today":
+        period_note = " (пока есть только метрики за сегодня)"
+
+    if section == "customers":
+        return (
+            f"👥 Покупатели ({_period_label(period)}{period_note})
+"
+            f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
+        )
+
+    # default: campaigns
     return (
-        f"метрики: {_fmt_ts(r['metrics_at'])}\n"
-        f"кампании: {int(r['campaigns_total'] or 0)} (сегодня {int(r['campaigns_today'] or 0)})\n"
-        f"доставки сегодня: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}\n"
-        f"подписчики активные: {int(r['subscribers_active'] or 0)}"
+        f"📣 Рассылки ({_period_label(period)}{period_note})
+"
+        f"• кампании: всего {int(r['campaigns_total'] or 0)}, сегодня {int(r['campaigns_today'] or 0)}
+"
+        f"• доставки: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}
+"
+        f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
     )
+
 
 
 def _instance_status_icon(r) -> str:
@@ -98,7 +132,7 @@ def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
         icon = _instance_status_icon(r)
         name = r["instance_name"]
         m = _mode_label(r["mode"])
-        kb.button(text=f"{icon} {name} ({m})", callback_data=f"inst:open:{r['instance_id']}:{mode}:{status}:{page}")
+        kb.button(text=f"{icon} {name} ({m})", callback_data=f"inst:open:{r['instance_id']}:campaigns:today:{mode}:{status}:{page}")
         kb.adjust(1)
 
     # Pagination
@@ -113,11 +147,25 @@ def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
     return kb.as_markup()
 
 
-def _build_instance_card_kb(*, instance_id: str, mode: str, status: str, page: int):
+def _build_instance_card_kb(*, instance_id: str, mode: str, status: str, page: int, section: str, period: str):
     kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ К списку", callback_data=f"inst:list:{mode}:{status}:{page}")
-    kb.button(text="🔄 Обновить", callback_data=f"inst:open:{instance_id}:{mode}:{status}:{page}")
+
+    # period switches
+    kb.button(text="Сегодня", callback_data=f"inst:open:{instance_id}:{section}:today:{mode}:{status}:{page}")
+    kb.button(text="7 дней", callback_data=f"inst:open:{instance_id}:{section}:7d:{mode}:{status}:{page}")
+    kb.button(text="Всё", callback_data=f"inst:open:{instance_id}:{section}:all:{mode}:{status}:{page}")
+    kb.adjust(3)
+
+    # section switches
+    kb.button(text="📣 Рассылки", callback_data=f"inst:open:{instance_id}:campaigns:{period}:{mode}:{status}:{page}")
+    kb.button(text="👥 Покупатели", callback_data=f"inst:open:{instance_id}:customers:{period}:{mode}:{status}:{page}")
     kb.adjust(2)
+
+    # navigation
+    kb.button(text="⬅️ К списку", callback_data=f"inst:list:{mode}:{status}:{page}")
+    kb.button(text="🔄 Обновить", callback_data=f"inst:open:{instance_id}:{section}:{period}:{mode}:{status}:{page}")
+    kb.adjust(2)
+
     return kb.as_markup()
 
 
@@ -131,10 +179,9 @@ async def _render_instances(target, pool, *, mode: str, status: str, page: int, 
         offset = (page - 1) * page_size
         rows, total = await list_instances(pool, mode=mode, status=status, limit=page_size, offset=offset)
 
-    header = "📦 Инстансы"
     text = (
-        f"{header}\n"
-        f"Режим: {_mode_label(mode)} | Статус: {_status_label(status)} | Alive окно: {ALIVE_WINDOW_MINUTES}м\n"
+        "📦 Инстансы\n"
+        f"Фильтры: режим={_mode_label(mode)}, статус={_status_label(status)}  | alive окно: {ALIVE_WINDOW_MINUTES}м\n"
         "🟢 живой / 🔴 нет сигнала\n"
         f"Страница: {page}/{pages}"
     )
@@ -146,25 +193,43 @@ async def _render_instances(target, pool, *, mode: str, status: str, page: int, 
         await _safe_edit_text(target.message, text, reply_markup=kb)
 
 
-async def _render_instance_card(cb: CallbackQuery, pool, *, instance_id: str, mode: str, status: str, page: int):
+async def _render_instance_card(
+    cb: CallbackQuery,
+    pool,
+    *,
+    instance_id: str,
+    mode: str,
+    status: str,
+    page: int,
+    section: str,
+    period: str,
+):
     r = await get_instance(pool, instance_id)
     if not r:
         await cb.answer("Инстанс не найден", show_alert=True)
         return
+
     icon = _instance_status_icon(r)
     text = (
         f"{icon} {r['instance_name']} ({_mode_label(r['mode'])})\n"
-        f"id: {r['instance_id']}\n"
-        f"bot: {_fmt_ts(r['bot_last_seen'])}\n"
-        f"worker: {_fmt_ts(r['worker_last_seen'])}\n\n"
-        f"{_fmt_metrics(r)}"
+        f"ID: {r['instance_id']}\n"
+        f"⏱ bot: {_fmt_ts(r['bot_last_seen'])}\n"
+        f"⏱ worker: {_fmt_ts(r['worker_last_seen'])}\n\n"
+        f"{_fmt_metrics(r=r, section=section, period=period)}"
     )
+
     await _safe_edit_text(
         cb.message,
         text,
-        reply_markup=_build_instance_card_kb(instance_id=instance_id, mode=mode, status=status, page=page),
+        reply_markup=_build_instance_card_kb(
+            instance_id=instance_id,
+            mode=mode,
+            status=status,
+            page=page,
+            section=section,
+            period=period,
+        ),
     )
-
 
 async def main() -> None:
     settings = load_settings()
@@ -212,13 +277,13 @@ async def main() -> None:
             await cb.answer()
             return
         try:
-            _, _, instance_id, mode, status, page_s = cb.data.split(":", 5)
+            _, _, instance_id, section, period, mode, status, page_s = cb.data.split(":", 7)
             page = int(page_s)
         except Exception:
             await cb.answer("Некорректная кнопка", show_alert=True)
             return
         await cb.answer()
-        await _render_instance_card(cb, pool, instance_id=instance_id, mode=mode, status=status, page=page)
+        await _render_instance_card(cb, pool, instance_id=instance_id, mode=mode, status=status, page=page, section=section, period=period)
 
     @dp.callback_query(F.data == "noop")
     async def noop_cb(cb: CallbackQuery) -> None:
