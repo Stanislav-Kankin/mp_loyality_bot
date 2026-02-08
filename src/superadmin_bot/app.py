@@ -181,7 +181,7 @@ def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int, 
     kb.button(text=f"🔎 Поиск" + (" ✅" if query else ""), callback_data="inst:search")
     kb.button(text=f"↕️ Сорт: {sort_label}", callback_data="inst:sort")
     if query:
-        kb.button(text="✖️ Сброс", callback_data="inst:search:clear")
+        kb.button(text="✖️ Сброс", callback_data="inst:clear")
         kb.adjust(3)
     else:
         kb.adjust(2)
@@ -366,7 +366,7 @@ async def main() -> None:
         await cb.answer("Сортировка: свежие" if new_sort == "seen" else "Сортировка: имя")
         await _render_instances(cb, pool, state=state)
 
-    @dp.callback_query(F.data == "inst:clear")
+    @dp.callback_query(F.data.in_({"inst:clear", "inst:search:clear"}))
     async def instances_clear_cb(cb: CallbackQuery, state: FSMContext) -> None:
         if cb.from_user is None or cb.from_user.id not in settings.superadmin_ids:
             await cb.answer()
