@@ -15,8 +15,24 @@ from superadmin_bot.db import ALIVE_WINDOW_MINUTES, create_pool, ensure_schema, 
 logger = logging.getLogger(__name__)
 
 
+def _mode_label(mode: str) -> str:
+    return {
+        "all": "все",
+        "brand": "бренд",
+        "demo": "демо",
+    }.get(mode, mode)
+
+
+def _status_label(status: str) -> str:
+    return {
+        "all": "любые",
+        "alive": "живые",
+        "dead": "мёртвые",
+    }.get(status, status)
+
+
 async def _safe_edit_text(message: Message, text: str, reply_markup=None) -> None:
-    """Ignore 'message is not modified' errors for better UX."""
+    """Telegram may throw `message is not modified` when user clicks same filter again."""
     try:
         await message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as e:
@@ -63,10 +79,6 @@ def _instance_status_icon(r) -> str:
     return "🔴"
 
 
-def _fmt_mode(mode: str) -> str:
-    return {"brand": "бренд", "demo": "демо"}.get(mode, mode)
-
-
 def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
     kb = InlineKeyboardBuilder()
 
@@ -85,8 +97,8 @@ def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
     for r in rows:
         icon = _instance_status_icon(r)
         name = r["instance_name"]
-        m = r["mode"]
-        kb.button(text=f"{icon} {name} ({_fmt_mode(m)})", callback_data=f"inst:open:{r['instance_id']}:{mode}:{status}:{page}")
+        m = _mode_label(r["mode"])
+        kb.button(text=f"{icon} {name} ({m})", callback_data=f"inst:open:{r['instance_id']}:{mode}:{status}:{page}")
         kb.adjust(1)
 
     # Pagination
@@ -120,10 +132,12 @@ async def _render_instances(target, pool, *, mode: str, status: str, page: int, 
         rows, total = await list_instances(pool, mode=mode, status=status, limit=page_size, offset=offset)
 
     header = "📦 Инстансы"
-    mode_ru = {"all": "все", "brand": "бренд", "demo": "демо"}.get(mode, mode)
-    status_ru = {"all": "любые", "alive": "живые", "dead": "мёртвые"}.get(status, status)
-    subtitle = f"Фильтры: режим={mode_ru}, статус={status_ru} | alive окно: {ALIVE_WINDOW_MINUTES}м"
-    text = f"{header}\n{subtitle}"
+    text = (
+        f"{header}\n"
+        f"Режим: {_mode_label(mode)} | Статус: {_status_label(status)} | Alive окно: {ALIVE_WINDOW_MINUTES}м\n"
+        "🟢 живой / 🔴 нет сигнала\n"
+        f"Страница: {page}/{pages}"
+    )
     kb = _build_instances_kb(rows, mode=mode, status=status, page=page, pages=pages)
 
     if isinstance(target, Message):
@@ -139,7 +153,7 @@ async def _render_instance_card(cb: CallbackQuery, pool, *, instance_id: str, mo
         return
     icon = _instance_status_icon(r)
     text = (
-        f"{icon} {r['instance_name']} ({_fmt_mode(r['mode'])})\n"
+        f"{icon} {r['instance_name']} ({_mode_label(r['mode'])})\n"
         f"id: {r['instance_id']}\n"
         f"bot: {_fmt_ts(r['bot_last_seen'])}\n"
         f"worker: {_fmt_ts(r['worker_last_seen'])}\n\n"
