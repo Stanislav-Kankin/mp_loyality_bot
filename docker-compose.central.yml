@@ -35,3 +35,8 @@ volumes:
   central_pg_data:
     external: true
     name: ${CENTRAL_PG_VOLUME_NAME:-mp_loyality_bot_central_pg_data}
+
+networks:
+  central_net:
+    external: true
+    name: ${CENTRAL_NET_NAME:-mp_central_net}

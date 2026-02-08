@@ -44,6 +44,14 @@ Stop:
 docker compose -f docker-compose.client.yml -p <client_slug> down
 ```
 
+Delete client полностью (контейнеры + его volumes):
+
+```bash
+docker compose -f docker-compose.client.yml -p <client_slug> down -v --remove-orphans
+```
+
+> Важно: удалится только volume этого клиента (prefix от `-p <client_slug>`). Central volume не трогаем.
+
 ## Notes
 - Each client gets its own compose project name (`-p`), therefore its own containers and volumes.
 - All clients share the Central metrics DB via `CENTRAL_DATABASE_DSN` and the shared network.
