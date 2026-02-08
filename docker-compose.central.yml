@@ -1,0 +1,33 @@
+services:
+  central_postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${CENTRAL_POSTGRES_DB:-central_loyalty}
+      POSTGRES_USER: ${CENTRAL_POSTGRES_USER:-central_loyalty}
+      POSTGRES_PASSWORD: ${CENTRAL_POSTGRES_PASSWORD:-central_loyalty_password}
+    volumes:
+      - central_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CENTRAL_POSTGRES_USER:-central_loyalty} -d ${CENTRAL_POSTGRES_DB:-central_loyalty}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  superadmin:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.superadmin
+    depends_on:
+      central_postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "-m", "superadmin_bot.app"]
+
+volumes:
+  # Reuse existing volume by default (current server state).
+  central_pg_data:
+    external: true
+    name: ${CENTRAL_PG_VOLUME_NAME:-mp_loyality_bot_central_pg_data}
