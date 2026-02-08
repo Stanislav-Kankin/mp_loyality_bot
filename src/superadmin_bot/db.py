@@ -35,6 +35,7 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
             );
 
             CREATE TABLE IF NOT EXISTS instance_metrics (
+
                 instance_id TEXT PRIMARY KEY REFERENCES instances(instance_id) ON DELETE CASCADE,
                 updated_at TIMESTAMPTZ NOT NULL,
                 campaigns_total BIGINT NOT NULL DEFAULT 0,
@@ -44,6 +45,17 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
                 deliveries_blocked_today BIGINT NOT NULL DEFAULT 0,
                 subscribers_active BIGINT NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS instance_metrics_daily (
+                instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+                metric_date DATE NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                campaigns_today BIGINT NOT NULL DEFAULT 0,
+                deliveries_sent_today BIGINT NOT NULL DEFAULT 0,
+                deliveries_failed_today BIGINT NOT NULL DEFAULT 0,
+                deliveries_blocked_today BIGINT NOT NULL DEFAULT 0,
+                PRIMARY KEY (instance_id, metric_date)
+            );
+
             """
         )
 
@@ -170,3 +182,58 @@ async def get_instance(pool: asyncpg.Pool, instance_id: str) -> asyncpg.Record |
             """,
             instance_id,
         )
+
+
+async def get_period_metrics(
+    pool: asyncpg.Pool,
+    *,
+    instance_id: str,
+    period: str,  # today|7d|all
+) -> dict[str, object] | None:
+    """Aggregate metrics for a period using daily max snapshots.
+
+    Returns:
+      {
+        "metrics_at": datetime|None,
+        "campaigns_created": int,
+        "deliveries_sent": int,
+        "deliveries_failed": int,
+        "deliveries_blocked": int,
+      }
+    """
+    if period not in {"today", "7d", "all"}:
+        period = "today"
+
+    # Daily table stores max counters within day (UTC-ish). For period aggregation:
+    # - "today": we can still compute from daily table, but usually card uses instance_metrics.
+    # - "7d": sum daily maxima for last 7 days (including today).
+    # - "all": sum daily maxima for all history.
+    since_date = None
+    if period == "7d":
+        # inclusive window: today-6 .. today
+        since_date = "current_date - interval '6 days'"
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            SELECT
+                max(updated_at) AS metrics_at,
+                COALESCE(sum(campaigns_today), 0) AS campaigns_created,
+                COALESCE(sum(deliveries_sent_today), 0) AS deliveries_sent,
+                COALESCE(sum(deliveries_failed_today), 0) AS deliveries_failed,
+                COALESCE(sum(deliveries_blocked_today), 0) AS deliveries_blocked
+            FROM instance_metrics_daily
+            WHERE instance_id = $1
+              AND ({'TRUE' if since_date is None else f'metric_date >= ({since_date})::date'});
+            """,
+            instance_id,
+        )
+        if row is None:
+            return None
+        return {
+            "metrics_at": row["metrics_at"],
+            "campaigns_created": int(row["campaigns_created"] or 0),
+            "deliveries_sent": int(row["deliveries_sent"] or 0),
+            "deliveries_failed": int(row["deliveries_failed"] or 0),
+            "deliveries_blocked": int(row["deliveries_blocked"] or 0),
+        }

@@ -117,3 +117,28 @@ async def push_instance_metrics(
             int(deliveries_blocked_today),
             int(subscribers_active),
         )
+
+        await conn.execute(
+            """
+            INSERT INTO instance_metrics_daily(
+                instance_id, metric_date, updated_at,
+                campaigns_today,
+                deliveries_sent_today, deliveries_failed_today, deliveries_blocked_today
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (instance_id, metric_date)
+            DO UPDATE SET
+                updated_at = EXCLUDED.updated_at,
+                campaigns_today = GREATEST(instance_metrics_daily.campaigns_today, EXCLUDED.campaigns_today),
+                deliveries_sent_today = GREATEST(instance_metrics_daily.deliveries_sent_today, EXCLUDED.deliveries_sent_today),
+                deliveries_failed_today = GREATEST(instance_metrics_daily.deliveries_failed_today, EXCLUDED.deliveries_failed_today),
+                deliveries_blocked_today = GREATEST(instance_metrics_daily.deliveries_blocked_today, EXCLUDED.deliveries_blocked_today);
+            """,
+            instance_id,
+            now.date(),
+            now,
+            int(campaigns_today),
+            int(deliveries_sent_today),
+            int(deliveries_failed_today),
+            int(deliveries_blocked_today),
+        )

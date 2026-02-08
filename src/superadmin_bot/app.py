@@ -10,7 +10,14 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from superadmin_bot.config import load_settings
-from superadmin_bot.db import ALIVE_WINDOW_MINUTES, create_pool, ensure_schema, get_instance, list_instances
+from superadmin_bot.db import (
+    ALIVE_WINDOW_MINUTES,
+    create_pool,
+    ensure_schema,
+    get_instance,
+    get_period_metrics,
+    list_instances,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,32 +70,44 @@ def _section_label(section: str) -> str:
     }.get(section, section)
 
 
-def _fmt_metrics(*, r, section: str, period: str) -> str:
-    """Render metrics block. In SA-5 we only have 'today' counters in DB."""
-    if r.get("metrics_at") is None:
-        return "метрики: —"
+def _fmt_metrics(*, r: dict[str, object], section: str, period: str, period_metrics: dict[str, object] | None = None) -> str:
+    metrics_at = (period_metrics or {}).get("metrics_at") or r.get("metrics_at")
+    if metrics_at is None:
+        metrics_at_s = "—"
+    else:
+        metrics_at_s = _fmt_ts(metrics_at)
 
-    # Note: central schema currently stores only 'today' counters.
-    period_note = ""
-    if period != "today":
-        period_note = " (пока есть только метрики за сегодня)"
+    subscribers_active = int(r.get("subscribers_active") or 0)
+
+    # Defaults: today from instance_metrics row
+    campaigns_today = int(r.get("campaigns_today") or 0)
+    deliveries_sent_today = int(r.get("deliveries_sent_today") or 0)
+    deliveries_failed_today = int(r.get("deliveries_failed_today") or 0)
+    deliveries_blocked_today = int(r.get("deliveries_blocked_today") or 0)
+
+    if period in {"7d", "all"} and period_metrics is not None:
+        campaigns_today = int(period_metrics.get("campaigns_created") or 0)
+        deliveries_sent_today = int(period_metrics.get("deliveries_sent") or 0)
+        deliveries_failed_today = int(period_metrics.get("deliveries_failed") or 0)
+        deliveries_blocked_today = int(period_metrics.get("deliveries_blocked") or 0)
+
+    campaigns_total = int(r.get("campaigns_total") or 0)
 
     if section == "customers":
+        return f"👥 Клиенты\n• активные подписчики: {subscribers_active}\n• метрики: {metrics_at_s}"
+
+    if section == "campaigns":
+        period_label = _period_label(period)
         return (
-            f"👥 Покупатели ({_period_label(period)}{period_note})"
-            f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
+            f"📣 Рассылки ({period_label})\n"
+            f"• кампании: всего {campaigns_total}\n"
+            f"• создано за период: {campaigns_today}\n"
+            f"• доставки: ✅ {deliveries_sent_today} / ❌ {deliveries_failed_today} / 🚫 {deliveries_blocked_today}\n"
+            f"• активные подписчики: {subscribers_active}\n"
+            f"• метрики: {metrics_at_s}"
         )
 
-    # default: campaigns
-    return (
-        f"📣 Рассылки ({_period_label(period)}{period_note})"
-        f"• кампании: всего {int(r['campaigns_total'] or 0)}, сегодня {int(r['campaigns_today'] or 0)}"
-        f"• доставки: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}"
-        f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
-    )
-
-
-
+    return f"метрики: {metrics_at_s}"
 def _instance_status_icon(r) -> str:
     # "alive" if bot or worker was seen recently.
     ts = r.get("bot_last_seen") or r.get("worker_last_seen")
@@ -204,6 +223,10 @@ async def _render_instance_card(
     if not r:
         await cb.answer("Инстанс не найден", show_alert=True)
         return
+
+    period_metrics: dict[str, object] | None = None
+    if period in {"7d", "all"}:
+        period_metrics = await get_period_metrics(pool, instance_id=instance_id, period=period)
 
     icon = _instance_status_icon(r)
     text = (
