@@ -13,6 +13,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - default
+      - central_net
 
   superadmin:
     build: .
@@ -24,7 +27,15 @@ services:
         condition: service_healthy
     volumes:
       - ./logs:/app/logs
+    networks:
+      - default
+      - central_net
     command: ["python", "-m", "superadmin_bot.app"]
 
 volumes:
   central_pg_data:
+
+networks:
+  central_net:
+    external: true
+    name: ${CENTRAL_NET_NAME:-mp_central_net}
