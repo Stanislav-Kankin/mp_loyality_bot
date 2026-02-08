@@ -12,15 +12,11 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
 
 
 async def ensure_schema(pool: asyncpg.Pool) -> None:
-    """Create/upgrade minimal schema for SuperAdmin MVP.
+    """Create minimal schema for SuperAdmin MVP.
 
-    IMPORTANT: Central DB can be long-lived. We must be able to add new columns
-    without breaking existing installs.
-
-    Only contains instance registry + heartbeats + aggregated metrics. No PII.
+    Only contains instance registry and heartbeats. No PII.
     """
     async with pool.acquire() as conn:
-        # 1) Create base tables.
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS instances (
@@ -48,100 +44,8 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
                 deliveries_blocked_today BIGINT NOT NULL DEFAULT 0,
                 subscribers_active BIGINT NOT NULL DEFAULT 0
             );
-
-            -- Daily snapshot table for period-based aggregates (no PII)
-            CREATE TABLE IF NOT EXISTS instance_metrics_daily (
-                instance_id TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
-                metric_date DATE NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL,
-                campaigns_today BIGINT NOT NULL DEFAULT 0,
-                deliveries_sent_today BIGINT NOT NULL DEFAULT 0,
-                deliveries_failed_today BIGINT NOT NULL DEFAULT 0,
-                deliveries_blocked_today BIGINT NOT NULL DEFAULT 0,
-                subscribers_active BIGINT NOT NULL DEFAULT 0,
-                PRIMARY KEY (instance_id, metric_date)
-            );
             """
         )
-
-        # 2) Schema upgrades for existing installations.
-        # NOTE: asyncpg executes one statement at a time reliably; we keep them separate.
-        await conn.execute(
-            """
-            ALTER TABLE IF EXISTS instance_metrics
-                ADD COLUMN IF NOT EXISTS subscribers_active BIGINT NOT NULL DEFAULT 0;
-            """
-        )
-        await conn.execute(
-            """
-            ALTER TABLE IF EXISTS instance_metrics_daily
-                ADD COLUMN IF NOT EXISTS subscribers_active BIGINT NOT NULL DEFAULT 0;
-            """
-        )
-
-
-async def get_instance_metrics_for_period(
-    pool: asyncpg.Pool,
-    *,
-    instance_id: str,
-    period: str,  # today|7d|all
-) -> dict[str, object]:
-    """Return metrics dict for given period.
-
-    - today: values from `instance_metrics` (latest upsert)
-    - 7d/all: sums from `instance_metrics_daily`
-
-    Always includes keys compatible with app._fmt_metrics.
-    """
-    period = period if period in {"today", "7d", "all"} else "today"
-
-    async with pool.acquire() as conn:
-        base = await conn.fetchrow(
-            """
-            SELECT updated_at AS metrics_at,
-                   campaigns_total,
-                   campaigns_today,
-                   deliveries_sent_today,
-                   deliveries_failed_today,
-                   deliveries_blocked_today,
-                   subscribers_active
-            FROM instance_metrics
-            WHERE instance_id = $1;
-            """,
-            instance_id,
-        )
-
-        if not base:
-            return {"metrics_at": None}
-
-        # Today is exactly what's stored in instance_metrics
-        if period == "today":
-            return dict(base)
-
-        # For period aggregates we sum daily snapshots.
-        # campaigns_total should remain "all time" from instance_metrics.
-        date_cond = "TRUE"
-        if period == "7d":
-            date_cond = "metric_date >= (CURRENT_DATE - INTERVAL '6 days')"
-
-        agg = await conn.fetchrow(
-            f"""
-            SELECT MAX(updated_at) AS metrics_at,
-                   COALESCE(SUM(campaigns_today), 0) AS campaigns_today,
-                   COALESCE(SUM(deliveries_sent_today), 0) AS deliveries_sent_today,
-                   COALESCE(SUM(deliveries_failed_today), 0) AS deliveries_failed_today,
-                   COALESCE(SUM(deliveries_blocked_today), 0) AS deliveries_blocked_today,
-                   MAX(subscribers_active) AS subscribers_active
-            FROM instance_metrics_daily
-            WHERE instance_id = $1 AND {date_cond};
-            """,
-            instance_id,
-        )
-
-        out = dict(base)
-        if agg:
-            out.update({k: agg[k] for k in agg.keys()})
-        return out
 
 
 async def list_instances(
@@ -149,6 +53,8 @@ async def list_instances(
     *,
     mode: str = "all",  # all|demo|brand
     status: str = "all",  # all|alive|dead
+    query: str | None = None,
+    sort: str = "seen",  # seen|name
     limit: int = 12,
     offset: int = 0,
 ) -> tuple[list[asyncpg.Record], int]:
@@ -159,12 +65,21 @@ async def list_instances(
     if status not in {"all", "alive", "dead"}:
         status = "all"
 
+    q = (query or "").strip()
+    if not q:
+        q = ""
+    # keep order stable (avoid SQL injection by using placeholders)
+    if sort not in {"seen", "name"}:
+        sort = "seen"
+
     # We keep SQL placeholders stable to avoid mistakes with dynamic numbering.
     # $1: mode (NULL means "all")
     # $2: alive window minutes
+    # $3: query string ('' means disabled)
     # $3: limit
     # $4: offset
     mode_cond = "($1::text IS NULL OR i.mode = $1::text)"
+    query_cond = "($3::text = '' OR i.instance_id ILIKE '%' || $3::text || '%' OR i.instance_name ILIKE '%' || $3::text || '%')"
     # alive if max(bot_last_seen, worker_last_seen) is within window
     # IMPORTANT: keep $2 placeholder present for *all* statuses (asyncpg binds args by placeholder count).
     status_cond = "(TRUE OR $2::int IS NOT NULL)"
@@ -190,6 +105,7 @@ async def list_instances(
                 LEFT JOIN heartbeats hb_worker
                   ON hb_worker.instance_id = i.instance_id AND hb_worker.service = 'worker'
                 WHERE {mode_cond}
+                  AND {query_cond}
             )
             SELECT count(*)
             FROM base
@@ -197,6 +113,7 @@ async def list_instances(
             """,
             mode_arg,
             ALIVE_WINDOW_MINUTES,
+            q,
         )
 
         rows = await conn.fetch(
@@ -225,15 +142,17 @@ async def list_instances(
                 LEFT JOIN instance_metrics m
                   ON m.instance_id = i.instance_id
                 WHERE {mode_cond}
+                  AND {query_cond}
             )
             SELECT *
             FROM base
             WHERE {status_cond}
-            ORDER BY last_seen_at DESC, instance_name ASC
-            LIMIT $3 OFFSET $4;
+            ORDER BY {'last_seen_at DESC, instance_name ASC' if sort == 'seen' else 'instance_name ASC, last_seen_at DESC'}
+            LIMIT $4 OFFSET $5;
             """,
             mode_arg,
             ALIVE_WINDOW_MINUTES,
+            q,
             limit,
             offset,
         )
