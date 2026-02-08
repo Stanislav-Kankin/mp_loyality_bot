@@ -10,14 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from superadmin_bot.config import load_settings
-from superadmin_bot.db import (
-    ALIVE_WINDOW_MINUTES,
-    create_pool,
-    ensure_schema,
-    get_instance,
-    get_instance_metrics_for_period,
-    list_instances,
-)
+from superadmin_bot.db import ALIVE_WINDOW_MINUTES, create_pool, ensure_schema, get_instance, list_instances
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +45,8 @@ def _fmt_ts(ts) -> str:
     if ts is None:
         return "—"
     # asyncpg returns datetime with tz
-    return ts.strftime("%Y-%m-%d %H:%M:%S")
+    # user-friendly RU format: dd.mm.yyyy hh.mm.ss
+    return ts.strftime("%d.%m.%Y %H.%M.%S")
 
 
 def _period_label(period: str) -> str:
@@ -71,22 +65,27 @@ def _section_label(section: str) -> str:
 
 
 def _fmt_metrics(*, r, section: str, period: str) -> str:
-    """Render metrics block for selected section/period."""
+    """Render metrics block. In SA-5 we only have 'today' counters in DB."""
     if r.get("metrics_at") is None:
         return "метрики: —"
 
+    # Note: central schema currently stores only 'today' counters.
+    period_note = ""
+    if period != "today":
+        period_note = " (пока есть только метрики за сегодня)"
+
     if section == "customers":
         return (
-            f"👥 Покупатели ({_period_label(period)})\n"
-            f"• активные подписчики: {int(r.get('subscribers_active') or 0)}"
+            f"👥 Покупатели ({_period_label(period)}{period_note})"
+            f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
         )
 
     # default: campaigns
     return (
-        f"📣 Рассылки ({_period_label(period)})\n"
-        f"• кампании: всего {int(r.get('campaigns_total') or 0)}, за период {int(r.get('campaigns_today') or 0)}\n"
-        f"• доставки: ✅ {int(r.get('deliveries_sent_today') or 0)} / ❌ {int(r.get('deliveries_failed_today') or 0)} / 🚫 {int(r.get('deliveries_blocked_today') or 0)}\n"
-        f"• активные подписчики: {int(r.get('subscribers_active') or 0)}"
+        f"📣 Рассылки ({_period_label(period)}{period_note})"
+        f"• кампании: всего {int(r['campaigns_total'] or 0)}, сегодня {int(r['campaigns_today'] or 0)}"
+        f"• доставки: ✅ {int(r['deliveries_sent_today'] or 0)} / ❌ {int(r['deliveries_failed_today'] or 0)} / 🚫 {int(r['deliveries_blocked_today'] or 0)}"
+        f"• активные подписчики: {int(r['subscribers_active'] or 0)}"
     )
 
 
@@ -206,10 +205,6 @@ async def _render_instance_card(
     if not r:
         await cb.answer("Инстанс не найден", show_alert=True)
         return
-
-    # Replace "today" metrics with selected period aggregates (7d/all) when available.
-    metrics = await get_instance_metrics_for_period(pool, instance_id=instance_id, period=period)
-    r = {**dict(r), **metrics}
 
     icon = _instance_status_icon(r)
     text = (
