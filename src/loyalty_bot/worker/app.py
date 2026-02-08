@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import time
 
 import asyncpg
 from aiogram import Bot
@@ -25,11 +26,17 @@ from loyalty_bot.db.repo import (
     mark_delivery_blocked,
     mark_delivery_failed,
     reschedule_delivery,
-    finalize_completed_campaigns,
-    get_shop_seller_tg_user_id,
     get_shop_audience_counts,
+    finalize_completed_campaigns,
+    list_unnotified_completed_campaigns,
+    mark_campaign_completed_notified,
+    list_due_trial_day5_reminders,
+    list_due_trial_day7_reminders,
+    mark_trial_day5_notified,
+    mark_trial_day7_notified,
 )
 from loyalty_bot.logging_setup import setup_logging
+from loyalty_bot.metrics.central import create_central_pool, push_heartbeat, push_instance_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +58,36 @@ def _build_campaign_kb(*, url: str, button_title: str) -> InlineKeyboardBuilder:
     return kb
 
 
+def _build_trial_day5_kb() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Хочу такого бота", callback_data="trial:day5:want")
+    kb.button(text="⏳ Пока ещё смотрю", callback_data="trial:day5:later")
+    kb.adjust(1)
+    return kb
+
+
+def _build_trial_day7_kb() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Хочу такого бота", callback_data="trial:day7:want")
+    kb.button(text="🚫 Нет, спасибо", callback_data="trial:day7:no")
+    kb.adjust(1)
+    return kb
+
+
+
+def _format_delivery_text(*, shop_name: str, text: str) -> str:
+    sn = (shop_name or "").strip()
+    if not sn:
+        return text or ""
+    prefix = f"🏷 Магазин: {sn}\n\n"
+    return prefix + (text or "")
+
+
 async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
     delivery_id = int(item["delivery_id"])
     campaign_id = int(item["campaign_id"])
     tg_user_id = int(item["tg_user_id"])
+    shop_name = str(item.get("shop_name") or "").strip()
     text = str(item.get("text") or "")
     button_title = str(item.get("button_title") or "")
     url = str(item.get("url") or "")
@@ -62,19 +95,20 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
     attempt = int(item.get("attempt") or 1)
 
     try:
+        formatted = _format_delivery_text(shop_name=shop_name, text=text)
         if photo_file_id:
             msg = await bot.send_photo(
                 chat_id=tg_user_id,
                 photo=str(photo_file_id),
-                caption=text[:1024] if text else None,
+                caption=formatted[:1024] if formatted else None,
                 reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
             )
-            if len(text) > 1024:
-                await bot.send_message(chat_id=tg_user_id, text=text[1024:], disable_web_page_preview=True)
+            if formatted and len(formatted) > 1024:
+                await bot.send_message(chat_id=tg_user_id, text=formatted[1024:], disable_web_page_preview=True)
         else:
             msg = await bot.send_message(
                 chat_id=tg_user_id,
-                text=text,
+                text=formatted,
                 reply_markup=_build_campaign_kb(url=url, button_title=button_title).as_markup(),
                 disable_web_page_preview=True,
             )
@@ -107,6 +141,76 @@ async def _process_delivery(bot: Bot, pool: asyncpg.Pool, item: dict) -> None:
         return
 
 
+async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool) -> None:
+    items = await list_unnotified_completed_campaigns(pool, limit=50)
+    for it in items:
+        campaign_id = int(it["campaign_id"])
+        shop_id = int(it["shop_id"])
+
+        # Audience stats for the shop (total/subscribed/unsubscribed).
+        audience = await get_shop_audience_counts(pool, shop_id)
+        total_recipients = int(it.get("total_recipients") or 0)
+        sent_count = int(it.get("sent_count") or 0)
+        failed_count = int(it.get("failed_count") or 0)
+        blocked_count = int(it.get("blocked_count") or 0)
+        not_delivered = max(0, total_recipients - sent_count - failed_count - blocked_count)
+
+        text = (
+            f"✅ Рассылка №{campaign_id} завершена\n\n"
+            f"👥 Получателей в рассылке: {total_recipients}\n"
+            f"✅ Доставлено: {sent_count}\n"
+            f"❌ Ошибки: {failed_count}\n"
+            f"⛔ Заблокировали: {blocked_count}\n"
+            f"📭 Не доставлено: {not_delivered}\n\n"
+            f"📦 База магазина: {it.get('shop_name','')}\n"
+            f"— всего записей: {int(audience.get('total', 0))}\n"
+            f"— активные (подписаны): {int(audience.get('subscribed', 0))}\n"
+            f"— отписанные: {int(audience.get('unsubscribed', 0))}"
+        )
+
+        try:
+            await bot.send_message(int(it["seller_tg_user_id"]), text)
+            await mark_campaign_completed_notified(pool, campaign_id=campaign_id)
+            logger.info("campaign completed notified campaign_id=%s seller_tg=%s", campaign_id, it["seller_tg_user_id"])
+        except Exception:
+            logger.exception("failed to notify seller for completed campaign_id=%s", campaign_id)
+
+
+async def _notify_trial_reminders(bot: Bot, pool: asyncpg.Pool) -> None:
+    """Send DEMO reminders on day 5 and day 7 (once)."""
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        return
+
+    # Day 5
+    day5 = await list_due_trial_day5_reminders(pool, limit=50)
+    for it in day5:
+        tg_user_id = int(it["tg_user_id"])
+        try:
+            await bot.send_message(
+                tg_user_id,
+                "⏰ Уже 5-й день демо. Хотите такого персонального бота?",
+                reply_markup=_build_trial_day5_kb().as_markup(),
+            )
+            await mark_trial_day5_notified(pool, tg_user_id=tg_user_id)
+            logger.info("trial day5 notified tg_id=%s", tg_user_id)
+        except Exception:
+            logger.exception("failed to send trial day5 reminder tg_id=%s", tg_user_id)
+
+    # Day 7
+    day7 = await list_due_trial_day7_reminders(pool, limit=50)
+    for it in day7:
+        tg_user_id = int(it["tg_user_id"])
+        try:
+            await bot.send_message(
+                tg_user_id,
+                "⏰ Демо закончилось. Хотите подключить персонального бота?",
+                reply_markup=_build_trial_day7_kb().as_markup(),
+            )
+            await mark_trial_day7_notified(pool, tg_user_id=tg_user_id)
+            logger.info("trial day7 notified tg_id=%s", tg_user_id)
+        except Exception:
+            logger.exception("failed to send trial day7 reminder tg_id=%s", tg_user_id)
+
 async def main() -> None:
     setup_logging(level=settings.log_level, service_name="worker", log_dir=settings.log_dir)
 
@@ -115,6 +219,9 @@ async def main() -> None:
         await apply_migrations(conn, pathlib.Path("/app/migrations"))
 
     bot = Bot(token=settings.bot_token)
+
+    central_pool = await create_central_pool()
+    last_hb = 0.0
 
     # Simple global rate limiter: minimum delay between messages.
     rate = max(1, int(settings.tg_global_rate_per_sec))
@@ -129,11 +236,49 @@ async def main() -> None:
 
     try:
         while True:
+            # Heartbeat to SuperAdmin central DB (optional).
+            if central_pool is not None:
+                now_m = time.monotonic()
+                if now_m - last_hb >= float(getattr(settings, "metrics_push_interval_seconds", 60)):
+                    try:
+                        await push_heartbeat(central_pool, service="worker")
+
+                        # Aggregated metrics snapshot (no PII). Safe to fail silently.
+                        async with pool.acquire() as conn:
+                            row = await conn.fetchrow(
+                                """
+                                SELECT
+                                    (SELECT COUNT(*) FROM campaigns) AS campaigns_total,
+                                    (SELECT COUNT(*) FROM campaigns WHERE created_at >= date_trunc('day', now())) AS campaigns_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'sent' AND sent_at >= date_trunc('day', now())) AS deliveries_sent_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'failed' AND next_attempt_at >= date_trunc('day', now())) AS deliveries_failed_today,
+                                    (SELECT COUNT(*) FROM campaign_deliveries WHERE status = 'blocked' AND next_attempt_at >= date_trunc('day', now())) AS deliveries_blocked_today,
+                                    (SELECT COUNT(*) FROM shop_customers WHERE status = 'subscribed') AS subscribers_active;
+                                """
+                            )
+                        if row is not None:
+                            await push_instance_metrics(
+                                central_pool,
+                                campaigns_total=int(row["campaigns_total"] or 0),
+                                campaigns_today=int(row["campaigns_today"] or 0),
+                                deliveries_sent_today=int(row["deliveries_sent_today"] or 0),
+                                deliveries_failed_today=int(row["deliveries_failed_today"] or 0),
+                                deliveries_blocked_today=int(row["deliveries_blocked_today"] or 0),
+                                subscribers_active=int(row["subscribers_active"] or 0),
+                            )
+                    except Exception:
+                        logger.exception("failed to push worker heartbeat")
+                    last_hb = now_m
+
             items = await lease_due_deliveries(pool, batch_size=int(settings.send_batch_size))
             if not items:
                 # Still try to finalize campaigns periodically.
-                completed = await finalize_completed_campaigns(pool)
-                await _notify_completed_campaigns(bot, pool, completed)
+                await finalize_completed_campaigns(pool)
+                try:
+                    await _notify_completed_campaigns(bot, pool)
+                    await _notify_trial_reminders(bot, pool)
+                except Exception:
+                    logger.exception('notify_completed_campaigns failed (will retry later)')
                 await asyncio.sleep(float(settings.send_tick_seconds))
                 continue
 
@@ -141,66 +286,17 @@ async def main() -> None:
                 await _process_delivery(bot, pool, item)
                 await asyncio.sleep(min_delay)
 
-            completed = await finalize_completed_campaigns(pool)
-            await _notify_completed_campaigns(bot, pool, completed)
+            await finalize_completed_campaigns(pool)
+            await _notify_completed_campaigns(bot, pool)
+            await _notify_trial_reminders(bot, pool)
 
     finally:
         await bot.session.close()
         await pool.close()
-
-
-async def _notify_completed_campaigns(bot: Bot, pool: asyncpg.Pool, completed: list[dict]) -> None:
-    if not completed:
-        return
-
-    for camp in completed:
-        try:
-            campaign_id = int(camp["id"])
-            shop_id = int(camp["shop_id"])
-            seller_tg = await get_shop_seller_tg_user_id(pool, shop_id=shop_id)
-            if seller_tg is None:
-                logger.info("Completed campaign %s: seller not found for shop_id=%s", campaign_id, shop_id)
-                continue
-
-            total = int(camp.get("total_recipients") or 0)
-            sent = int(camp.get("sent_count") or 0)
-            failed = int(camp.get("failed_count") or 0)
-            blocked = int(camp.get("blocked_count") or 0)
-            not_delivered = max(0, total - sent)
-
-            audience = await get_shop_audience_counts(pool, shop_id=shop_id)
-            base_total = int(audience.get("total") or 0)
-            base_active = int(audience.get("subscribed") or 0)
-            base_unsub = int(audience.get("unsubscribed") or 0)
-
-            text = (
-                f"✅ Рассылка #{campaign_id} завершена\n\n"
-                f"👥 Получателей в рассылке: {total}\n"
-                f"✅ Доставлено: {sent}\n"
-                f"❌ Ошибки: {failed}\n"
-                f"⛔ Заблокировали: {blocked}\n"
-                f"📭 Не доставлено: {not_delivered}\n\n"
-                f"📦 База магазина:\n"
-                f"— всего записей: {base_total}\n"
-                f"— активные (подписаны): {base_active}\n"
-                f"— отписанные: {base_unsub}"
-            )
-
-            await bot.send_message(chat_id=int(seller_tg), text=text)
-            logger.info(
-                "campaign_completed_notified campaign_id=%s seller_tg=%s total=%s sent=%s failed=%s blocked=%s base_total=%s base_active=%s base_unsub=%s",
-                campaign_id,
-                seller_tg,
-                total,
-                sent,
-                failed,
-                blocked,
-                base_total,
-                base_active,
-                base_unsub,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Failed to notify completed campaign: %s", e)
+        if central_pool is not None:
+            await central_pool.close()
+        if central_pool is not None:
+            await central_pool.close()
 
 
 if __name__ == "__main__":

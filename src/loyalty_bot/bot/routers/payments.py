@@ -12,13 +12,32 @@ from loyalty_bot.db.repo import (
     ensure_seller,
     get_campaign_for_seller,
     get_seller_credits,
+    get_seller_trial,
     has_seller_credit_tx_by_tg_charge_id,
+    is_seller_allowed,
     mark_campaign_paid,
 )
 
 router = Router()
 
 logger = logging.getLogger(__name__)
+
+
+def _is_admin(tg_id: int) -> bool:
+    return tg_id in settings.admin_ids_set
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    """True if user is in DEMO trial (not admin/allowlisted). Purchases are forbidden in DEMO bot."""
+    if not settings.is_demo_bot:
+        return False
+    if _is_admin(tg_id):
+        return False
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
+
 
 
 async def _safe_answer_pre_checkout(bot: Bot, pre: PreCheckoutQuery, *, ok: bool, error_message: str | None = None) -> None:
@@ -103,6 +122,11 @@ async def pre_checkout(pre: PreCheckoutQuery, pool: asyncpg.Pool, bot: Bot) -> N
         pre.invoice_payload,
     )
 
+    # DEMO bot: all purchases are forbidden.
+    if await _is_demo_seller(pool, tg_id):
+        await _safe_answer_pre_checkout(bot, pre, ok=False, error_message="Покупки в демо недоступны.")
+        return
+
     if info["kind"] == "credits_pack":
         qty = int(info["qty"])
         expected_minor = {
@@ -160,6 +184,11 @@ async def successful_payment(message: Message, pool: asyncpg.Pool) -> None:
     if info is None:
         logger.info("successful_payment invalid payload tg_id=%s payload=%s", tg_id, sp.invoice_payload)
         await message.answer("Оплата получена, но не удалось определить назначение платежа. Напишите администратору.")
+        return
+
+    # DEMO bot: purchases are forbidden; ignore successful payments just in case.
+    if await _is_demo_seller(pool, tg_id):
+        await message.answer("Покупки в демо недоступны.")
         return
 
     logger.info(

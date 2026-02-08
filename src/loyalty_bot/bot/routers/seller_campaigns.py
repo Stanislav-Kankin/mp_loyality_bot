@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 import asyncpg
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -10,11 +10,13 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loyalty_bot.config import settings
-from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb
+from loyalty_bot.bot.keyboards import campaigns_menu, campaigns_list_kb, campaign_actions, campaign_card_actions, cancel_kb, cancel_skip_kb, skip_photo_kb, credits_packages_menu
 from loyalty_bot.db.repo import (
     is_seller_allowed,
     get_seller_credits,
+    get_seller_trial,
     start_campaign_sending,
+    restart_campaign_sending,
     mark_campaign_paid_test,
     create_campaign_draft,
     update_campaign_draft,
@@ -24,6 +26,34 @@ from loyalty_bot.db.repo import (
     list_seller_shops,
     get_shop_for_seller,
 )
+
+
+def _trial_is_expired(started_at: datetime | None) -> bool:
+    """Trial is considered expired after 7 full days from trial_started_at."""
+    if started_at is None:
+        return False
+    now = datetime.now(timezone.utc)
+    # started_at is timestamptz from Postgres; may be tz-aware already.
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return now >= (started_at + timedelta(days=7))
+
+
+async def _deny_if_demo_readonly(*, pool: asyncpg.Pool, tg_id: int, cb: CallbackQuery | None = None, msg: Message | None = None) -> bool:
+    """Return True if action must be denied due to expired DEMO trial."""
+    if not settings.is_demo_bot:
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    started_at = trial.get("trial_started_at") if trial else None
+    if not _trial_is_expired(started_at):
+        return False
+
+    text = "⛔ DEMO истекло. Доступен только просмотр (read-only)."
+    if cb is not None:
+        await cb.answer(text, show_alert=True)
+    if msg is not None:
+        await msg.answer(text)
+    return True
 
 def _status_label(status: str) -> str:
     s = (status or "").strip().lower()
@@ -330,12 +360,13 @@ async def campaignedit_skip_url(cb: CallbackQuery, state: FSMContext, pool: asyn
     await _campaign_finish_edit(cb.message, state, pool, tg_id)
     await cb.answer()
 
+
 def _shop_campaigns_menu_kb(shop_id: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Новая рассылка", callback_data=f"shop:campaigns:new:{shop_id}")
+    kb.button(text="➕ Создать рассылку", callback_data=f"shop:campaigns:new:{shop_id}")
     kb.button(text="📋 Мои рассылки", callback_data=f"shop:campaigns:list:{shop_id}")
     kb.button(text="⬅️ Назад к магазину", callback_data=f"shop:open:{shop_id}")
-    kb.adjust(1)
+    kb.adjust(1, 1, 1)
     return kb
 
 
@@ -375,6 +406,9 @@ async def shop_campaigns_new(cb: CallbackQuery, state: FSMContext, pool: asyncpg
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
         return
 
     raw_id = cb.data.split(":")[-1]
@@ -483,7 +517,15 @@ class CampaignCreate(StatesGroup):
 async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     if tg_id in settings.admin_ids_set:
         return True
-    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
+    # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return True
+
+    # DEMO funnel: allow seller navigation if trial has started (only in DEMO bot).
+    if not settings.is_demo_bot:
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
 
 
 def _is_valid_url(url: str) -> bool:
@@ -545,6 +587,9 @@ async def campaigns_create_start(cb: CallbackQuery, state: FSMContext, pool: asy
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
         return
 
     shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
@@ -907,6 +952,8 @@ async def preview_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
     await cb.answer("Ок ✅")
     await cb.message.answer(f"Ссылка: {camp['url']}")
+
+
 @router.callback_query(F.data.startswith("campaign:pay:stub:"))
 async def campaign_pay_stub(cb: CallbackQuery) -> None:
     await cb.answer("Оплата будет на следующем этапе (Этап 3).", show_alert=True)
@@ -925,6 +972,12 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
         return
 
     raw_id = cb.data.split(":")[-1]
@@ -976,7 +1029,93 @@ async def campaign_send(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+
+    shop_id: int | None = None
+    try:
+        if camp is not None and camp.get("shop_id") is not None:
+            shop_id = int(camp["shop_id"])
+    except (TypeError, ValueError, KeyError):
+        shop_id = None
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{campaign_id}")
+    kb.button(text="📋 К списку", callback_data="campaigns:list")
+    if shop_id is not None:
+        kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+
     await cb.message.answer(
-        f"Рассылка #{campaign_id} запущена. Получателей: {total}.\n"
-        "Воркер отправит сообщения в фоне."
+        f"Рассылка #{campaign_id} запущена. Получателей: {total}."
+        "Воркер отправит сообщения в фоне.",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("campaign:resend:"))
+async def campaign_resend(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    if await _deny_if_demo_readonly(pool=pool, tg_id=tg_id, cb=cb):
+        return
+
+    raw_id = cb.data.split(":")[-1]
+    if not raw_id.isdigit():
+        await cb.answer("Некорректный id", show_alert=True)
+        return
+    source_campaign_id = int(raw_id)
+
+    src = await get_campaign_for_seller(pool, seller_tg_user_id=tg_id, campaign_id=source_campaign_id)
+    if src is None:
+        await cb.answer("Кампания не найдена", show_alert=True)
+        return
+
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    if credits <= 0:
+        await cb.message.edit_text(
+            "У вас 0 доступных рассылок. Купите пакет:",
+            reply_markup=credits_packages_menu(back_cb=f"campaign:open:{source_campaign_id}", context=f"c{source_campaign_id}"),
+        )
+        await cb.answer()
+        return
+
+    shop_id: int | None = None
+    try:
+        shop_id = int(src["shop_id"])
+    except (TypeError, ValueError, KeyError):
+        shop_id = None
+        await cb.answer("Не удалось определить магазин кампании", show_alert=True)
+        return
+
+    # Restart the same campaign to keep a single record in UI.
+    try:
+        total = await restart_campaign_sending(pool, seller_tg_user_id=tg_id, campaign_id=source_campaign_id)
+    except ValueError as e:
+        code = str(e)
+        if code == "no_credits":
+            await cb.answer("У вас 0 доступных рассылок", show_alert=True)
+            return
+        if code in {"campaign_already_started", "campaign_not_restartable"}:
+            await cb.answer("Эту рассылку сейчас нельзя перезапустить", show_alert=True)
+            return
+        await cb.answer("Не удалось повторить рассылку", show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📨 Открыть рассылку", callback_data=f"campaign:open:{source_campaign_id}")
+    kb.button(text="📋 К списку", callback_data="campaigns:list")
+    kb.button(text="🏠 В меню магазина", callback_data=f"shop:open:{shop_id}")
+
+    await cb.answer("Запущено ✅")
+    await cb.message.answer(
+        f"Рассылка #{source_campaign_id} запущена повторно. Получателей: {total}."
+        "Воркер отправит сообщения в фоне.",
+        reply_markup=kb.as_markup(),
     )

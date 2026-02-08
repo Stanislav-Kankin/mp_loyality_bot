@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncpg
+import logging
+import datetime
+from zoneinfo import ZoneInfo
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.filters.command import CommandObject
@@ -24,9 +27,90 @@ from loyalty_bot.db.repo import (
     update_customer_profile,
     get_shop_welcome,
     get_customer_subscribed_shops,
+    set_seller_trial_started,
+    get_seller_trial,
 )
 
 router = Router()
+
+logger = logging.getLogger(__name__)
+
+
+_MSK = ZoneInfo("Europe/Moscow")
+
+
+def _fmt_msk(dt: datetime.datetime) -> str:
+    return dt.astimezone(_MSK).strftime("%Y-%m-%d %H:%M")
+
+
+def _trial_expires_at(trial_started_at: datetime.datetime) -> datetime.datetime:
+    return trial_started_at + datetime.timedelta(days=7)
+
+
+@router.callback_query(F.data == "trial:info")
+async def trial_info(cb: CallbackQuery) -> None:
+    await cb.answer()
+    if settings.is_demo_bot:
+        text = (
+            "ℹ️ INFO — DEMO-бот\n\n"
+            "Этот бот — демонстрация сервиса лояльности для селлеров WB/Ozon.\n\n"
+            "Что сделать в начале:\n"
+            "1) Нажмите «🏪 Магазины» → создайте магазин (в DEMO можно 1).\n"
+            "2) В магазине получите «📎 Ссылка» или «🔳 QR» и дайте покупателям.\n"
+            "3) Покупатель перейдёт по ссылке/QR и подпишется (opt‑in).\n"
+            "4) Нажмите «📣 Рассылки» → создайте и запустите рассылку.\n\n"
+            "Возможности DEMO:\n"
+            "• 7 дней теста с момента «Получить демо».\n"
+            "• 1 магазин.\n"
+            "• 3 бесплатные рассылки.\n"
+            "• Статистика доставок и «клики» по кнопке.\n\n"
+            "Ограничения DEMO:\n"
+            "• Покупки отключены.\n"
+            "• База покупателей из DEMO не переносится в персонального бота.\n\n"
+            "Хотите персонального бренд‑бота?\n"
+            "Создайте бота в BotFather и напишите нам вне бота — токен в боте не запрашиваем."
+        )
+    else:
+        text = (
+            "ℹ️ INFO\n\n"
+            "Это бот лояльности для вашего магазина.\n\n"
+            "Как начать:\n"
+            "1) «🏪 Магазины» → создайте магазин.\n"
+            "2) В магазине получите «📎 Ссылка» или «🔳 QR» и дайте покупателям.\n"
+            "3) Покупатели подпишутся по ссылке/QR и начнут получать рассылки.\n"
+            "4) «📣 Рассылки» → создайте рассылку и запустите по базе.\n\n"
+            "Клики считаются как нажатия на кнопку (без веб‑редиректов)."
+        )
+    await cb.message.answer(text)
+
+
+@router.callback_query(F.data == "trial:start")
+async def trial_start(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    if not settings.is_demo_bot:
+        await cb.answer("Недоступно в этом боте.", show_alert=True)
+        return
+    tg_id = cb.from_user.id if cb.from_user else None
+    if tg_id is None:
+        await cb.answer("Ошибка: не удалось определить Telegram user id.", show_alert=True)
+        return
+
+    await ensure_seller(pool, tg_id)
+    info = await set_seller_trial_started(pool, seller_tg_user_id=tg_id)
+    started_at = info.get("trial_started_at")
+
+    await cb.answer("Демо активировано ✅")
+
+    credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+    text = "Демо активировано на 7 дней."
+    if started_at is not None:
+        ends_at = _trial_expires_at(started_at)
+        text += f"\n\nДоступно до: {_fmt_msk(ends_at)} (МСК)"
+    text += f"\nДоступно рассылок: {credits}"
+
+    await cb.message.answer(
+        text,
+        reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
+    )
 
 async def _send_shop_welcome(message: Message, pool: asyncpg.Pool, shop_id: int) -> None:
     welcome = await get_shop_welcome(pool, shop_id=shop_id)
@@ -80,7 +164,61 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         await message.answer("Ошибка: не удалось определить Telegram user id.")
         return
 
-    shop_id = _parse_shop_payload(command.args)
+    raw_args = (command.args or '').strip() or None
+    if raw_args == 'landing' and not settings.is_demo_bot:
+        # landing payload is only meaningful in DEMO bot.
+        raw_args = None
+    shop_id = _parse_shop_payload(raw_args)
+    source = 'none'
+    if shop_id is not None:
+        source = 'buyer_shop'
+    elif raw_args == 'landing':
+        source = 'seller_landing'
+    logger.info('start: tg_id=%s payload=%r source=%s', tg_id, raw_args, source)
+
+    # Trial/demo exists only in DEMO bot mode.
+    trial_started_at = None
+    if settings.is_demo_bot:
+        trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+        trial_started_at = trial.get('trial_started_at') if trial else None
+
+    async def _show_seller_panel(*, show_trial_header: bool) -> None:
+        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+        header = ''
+        if show_trial_header and trial_started_at is not None:
+            ends_at = _trial_expires_at(trial_started_at)
+            header = (
+                'Демо активировано на 7 дней.\n\n'
+                f'Доступно до: {_fmt_msk(ends_at)} (МСК)\n'
+                f'Доступно рассылок: {credits}\n\n'
+            )
+        await message.answer(
+            f'{header}Панель селлера:\nДоступно рассылок: {credits}',
+            reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
+        )
+
+    # Seller landing flow (from website). Trial does NOT start automatically.
+    # In brand bots this payload is ignored.
+    if raw_args == 'landing' and settings.is_demo_bot:
+        if trial_started_at is not None:
+            await _show_seller_panel(show_trial_header=True)
+            return
+
+        b = InlineKeyboardBuilder()
+        b.button(text='🎁 Получить демо (7 дней)', callback_data='trial:start')
+        b.button(text='ℹ️ INFO', callback_data='trial:info')
+        b.adjust(1)
+        await message.answer(
+            'DEMO для селлера\n\n'
+            '— 7 дней доступа к демо-режиму\n'
+            '— можно создать 1 магазин и сделать 3 тестовые рассылки\n'
+            '— покупки в DEMO запрещены\n'
+            '— база покупателей НЕ переносится в персонального бота\n\n'
+            'Нажмите кнопку ниже, чтобы запустить демо.',
+            reply_markup=b.as_markup(),
+        )
+        return
+
 
     # Buyer flow (opt-in via deep-link)
     if shop_id is not None:
@@ -122,6 +260,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         await _send_shop_welcome(message, pool, shop_id)
         return
 
+
     # Seller flow
     # Admins are always allowed.
     # Sellers are allowed either via DB allowlist (preferred) or via legacy env SELLER_TG_IDS.
@@ -129,14 +268,15 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
     if not allowed:
         allowed = await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
 
+    # DEMO sellers: allow access to seller panel if trial already started.
+    if settings.is_demo_bot and (not allowed) and trial_started_at is not None:
+        await ensure_seller(pool, tg_id)
+        await _show_seller_panel(show_trial_header=True)
+        return
+
     if allowed:
         await ensure_seller(pool, tg_id)
-        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
-        await message.answer(
-            f"Панель селлера:\n"
-            f"Доступно рассылок: {credits}",
-            reply_markup=seller_main_menu(is_admin=tg_id in settings.admin_ids_set),
-        )
+        await _show_seller_panel(show_trial_header=(trial_started_at is not None))
         return
 
 
@@ -161,8 +301,7 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         b.adjust(1)
 
         await message.answer(
-            "Вы успешно подписаны на выгоду, приятного использования."
-            "Выберите магазин, чтобы отписаться:",
+            "Вы успешно подписаны на выгоду, приятного использования.\n\nВыберите магазин, чтобы отписаться:",
             reply_markup=b.as_markup(),
         )
         return
@@ -173,8 +312,6 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
         "Чтобы подписаться — перейдите по ссылке/QR от продавца.\n"
         "Если вы продавец — попросите администратора добавить ваш TG id в админке бота."
     )
-
-
 @router.message(BuyerOnboarding.full_years)
 async def buyer_onboarding_full_years(message: Message, state: FSMContext, pool: asyncpg.Pool) -> None:
     text = (message.text or "").strip()
@@ -229,6 +366,28 @@ async def buyer_onboarding_gender(cb: CallbackQuery, state: FSMContext, pool: as
 
     await _send_shop_welcome(cb.message, pool, shop_id)
 
+    await cb.answer()
+
+
+@router.callback_query(F.data == "buyer:subs")
+async def buyer_subscriptions_list_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
+    tg_id = cb.from_user.id
+    customer = await get_customer(pool, tg_id)
+    customer_id = int(customer["id"])
+    subs = await get_customer_subscribed_shops(pool, customer_id=customer_id)
+    if not subs:
+        await cb.message.answer("У вас нет активных подписок.")
+        await cb.answer()
+        return
+
+    b = InlineKeyboardBuilder()
+    for s in subs:
+        sid = int(s["shop_id"])
+        name = str(s["name"])
+        b.button(text=f"🚫 Отписаться от {name}", callback_data=f"buyer:unsub:{sid}")
+    b.adjust(1)
+
+    await cb.message.answer("Ваши подписки:\nВыберите магазин, чтобы отписаться:", reply_markup=b.as_markup())
     await cb.answer()
 
 

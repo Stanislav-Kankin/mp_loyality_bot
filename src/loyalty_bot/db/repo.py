@@ -54,6 +54,74 @@ async def ensure_seller(pool: asyncpg.Pool, tg_user_id: int) -> int:
             return seller_id
 
 
+
+
+async def get_seller_trial(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dict | None:
+    """Return trial info for the seller (if seller exists)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT trial_started_at, trial_state
+            FROM sellers
+            WHERE tg_user_id=$1;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            return None
+        return {
+            "trial_started_at": row["trial_started_at"],
+            "trial_state": row["trial_state"],
+        }
+
+
+
+
+async def count_seller_started_campaigns(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
+    """Count campaigns that have been started (i.e., not drafts) for the seller.
+
+    We treat a campaign as "started" when it left 'draft' status.
+    Used to enforce DEMO limits (e.g., max 3 sends).
+    """
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM campaigns c
+            JOIN shops sh ON sh.id = c.shop_id
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1
+              AND c.status IN ('sending', 'completed', 'sent');
+            """,
+            seller_tg_user_id,
+        )
+        return int(val or 0)
+async def set_seller_trial_started(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> dict:
+    """Start trial if not started yet (idempotent).
+
+    Sets trial_started_at if NULL. Also sets trial_state='active' if not set.
+    Returns updated values.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE sellers
+            SET trial_started_at = COALESCE(trial_started_at, now()),
+                trial_state = COALESCE(trial_state, 'active')
+            WHERE tg_user_id=$1
+            RETURNING id, trial_started_at, trial_state;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            raise ValueError("seller_not_found")
+
+        return {
+            "seller_id": int(row["id"]),
+            "trial_started_at": row["trial_started_at"],
+            "trial_state": row["trial_state"],
+        }
+
 async def get_seller_credits(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -362,6 +430,23 @@ async def list_seller_shops(pool: asyncpg.Pool, seller_tg_user_id: int) -> list[
         ]
 
 
+async def count_seller_shops(pool: asyncpg.Pool, *, seller_tg_user_id: int) -> int:
+    """Return number of shops belonging to seller."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM shops sh
+            JOIN sellers s ON s.id = sh.seller_id
+            WHERE s.tg_user_id=$1;
+            """,
+            seller_tg_user_id,
+        )
+        if row is None:
+            return 0
+        return int(row["cnt"] or 0)
+
+
 async def get_shop_for_seller(pool: asyncpg.Pool, seller_tg_user_id: int, shop_id: int) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -465,6 +550,105 @@ async def get_shop_subscription_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
             "total": int(row["total"] or 0),
         }
 
+
+async def get_shop_audience_counts(pool: asyncpg.Pool, shop_id: int) -> dict:
+    """Return audience stats for a shop (MVP analytics).
+
+    Counts are based on shop_customers + customers profile fields.
+
+    - total/subscribed/unsubscribed: all records in shop_customers for this shop
+    - gender/age groups: among subscribed (active) customers only
+    """
+    async with pool.acquire() as conn:
+        # Base counts (all statuses)
+        base = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status='subscribed') AS subscribed,
+                COUNT(*) FILTER (WHERE status='unsubscribed') AS unsubscribed,
+                COUNT(*) AS total
+            FROM shop_customers
+            WHERE shop_id=$1;
+            """,
+            shop_id,
+        )
+
+        # Breakdown among active subscribers only
+        rows_gender = await conn.fetch(
+            """
+            SELECT c.gender, COUNT(*) AS cnt
+            FROM shop_customers sc
+            JOIN customers c ON c.id = sc.customer_id
+            WHERE sc.shop_id=$1 AND sc.status='subscribed'
+            GROUP BY c.gender;
+            """,
+            shop_id,
+        )
+
+        rows_age = await conn.fetch(
+            """
+            SELECT
+                CASE
+                    WHEN c.full_years IS NULL THEN 'unknown'
+                    WHEN c.full_years <= 17 THEN '0_17'
+                    WHEN c.full_years BETWEEN 18 AND 27 THEN '18_27'
+                    WHEN c.full_years BETWEEN 28 AND 35 THEN '28_35'
+                    WHEN c.full_years BETWEEN 36 AND 45 THEN '36_45'
+                    WHEN c.full_years BETWEEN 46 AND 49 THEN '46_49'
+                    ELSE '50_plus'
+                END AS bucket,
+                COUNT(*) AS cnt
+            FROM shop_customers sc
+            JOIN customers c ON c.id = sc.customer_id
+            WHERE sc.shop_id=$1 AND sc.status='subscribed'
+            GROUP BY bucket;
+            """,
+            shop_id,
+        )
+
+    # Normalize gender values to {male, female, unknown}
+    g_male = 0
+    g_female = 0
+    g_unknown = 0
+    for r in rows_gender:
+        g = r["gender"]
+        cnt = int(r["cnt"] or 0)
+        if g is None:
+            g_unknown += cnt
+            continue
+        gs = str(g).strip().lower()
+        if gs in {"m", "male", "man", "м", "муж", "мужчина"}:
+            g_male += cnt
+        elif gs in {"f", "female", "woman", "ж", "жен", "женщина"}:
+            g_female += cnt
+        else:
+            g_unknown += cnt
+
+    age = {
+        "0_17": 0,
+        "18_27": 0,
+        "28_35": 0,
+        "36_45": 0,
+        "46_49": 0,
+        "50_plus": 0,
+        "unknown": 0,
+    }
+    for r in rows_age:
+        bucket = str(r["bucket"])
+        age[bucket] = int(r["cnt"] or 0)
+
+    return {
+        "total": int(base["total"] or 0) if base else 0,
+        "subscribed": int(base["subscribed"] or 0) if base else 0,
+        "unsubscribed": int(base["unsubscribed"] or 0) if base else 0,
+        "gender": {"male": g_male, "female": g_female, "unknown": g_unknown},
+        "age": age,
+    }
+
+
+# Backward/forward compatibility (older router imports)
+async def get_shop_audience_stats(pool: asyncpg.Pool, shop_id: int) -> dict:
+    return await get_shop_audience_counts(pool, shop_id)
 
 # Admin helpers (used by admin shop actions in shop card)
 
@@ -913,57 +1097,130 @@ async def start_campaign_sending(
             return total_i
 
 
-async def clone_campaign_for_resend(
+async def restart_campaign_sending(
     pool: asyncpg.Pool,
     *,
     seller_tg_user_id: int,
-    source_campaign_id: int,
+    campaign_id: int,
 ) -> int:
-    """Create a new draft campaign by copying an existing one.
+    """Restart campaign sending for an already finished campaign.
 
-    Used for 'send again' feature. The new campaign belongs to the same shop.
+    Why: in MVP we want a single campaign record in UI. Resend should not create
+    copies; instead we reset queue/statistics and start sending again.
+
+    - Verifies campaign belongs to seller.
+    - Allows status 'completed'/'sent' to be restarted.
+    - Consumes 1 seller credit atomically.
+    - Resets deliveries to 'pending' and re-enqueues new subscribers.
+    - Clears clicks (unique per campaign) and resets click_count.
+
+    Returns: total recipients count.
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            src = await conn.fetchrow(
+            camp = await conn.fetchrow(
                 """
-                SELECT
-                    c.shop_id,
-                    c.text,
-                    c.button_title,
-                    c.url,
-                    c.price_minor,
-                    c.currency,
-                    c.photo_file_id
+                SELECT c.id, c.shop_id, c.status, s.id AS seller_id
                 FROM campaigns c
                 JOIN shops sh ON sh.id = c.shop_id
                 JOIN sellers s ON s.id = sh.seller_id
-                WHERE c.id=$2 AND s.tg_user_id=$1;
+                WHERE s.tg_user_id=$1 AND c.id=$2
+                FOR UPDATE;
                 """,
-                int(seller_tg_user_id),
-                int(source_campaign_id),
+                seller_tg_user_id,
+                campaign_id,
             )
-            if src is None:
+            if camp is None:
                 raise ValueError("campaign_not_found")
 
-            new_id = await conn.fetchval(
+            status = str(camp["status"] or "")
+            # Only finished campaigns can be restarted via resend.
+            if status not in {"completed", "sent"}:
+                raise ValueError("campaign_not_restartable")
+
+            seller_id = int(camp["seller_id"])
+
+            # Consume 1 credit.
+            bal = await conn.fetchrow(
                 """
-                INSERT INTO campaigns(
-                    shop_id, status, created_at, text, button_title, url,
-                    price_minor, currency, photo_file_id
-                )
-                VALUES ($1, 'draft', now(), $2, $3, $4, $5, $6, $7)
-                RETURNING id;
+                UPDATE seller_credits
+                SET balance = balance - 1,
+                    updated_at = now()
+                WHERE seller_id=$1 AND balance > 0
+                RETURNING balance;
                 """,
-                int(src["shop_id"]),
-                str(src["text"]),
-                src["button_title"],
-                src["url"],
-                int(src["price_minor"]),
-                str(src["currency"]),
-                src["photo_file_id"],
+                seller_id,
             )
-            return int(new_id)
+            if bal is None:
+                raise ValueError("no_credits")
+            new_balance = int(bal["balance"])
+
+            await conn.execute(
+                """
+                INSERT INTO seller_credit_transactions(
+                    seller_id, delta, reason, created_at,
+                    campaign_id, balance_after
+                )
+                VALUES ($1, -1, 'campaign_resend', now(), $2, $3);
+                """,
+                seller_id,
+                campaign_id,
+                new_balance,
+            )
+
+            # Reset deliveries for this campaign to run again.
+            await conn.execute(
+                """
+                UPDATE campaign_deliveries
+                SET status='pending',
+                    attempt_count=0,
+                    next_attempt_at=now(),
+                    last_error=NULL,
+                    sent_at=NULL,
+                    tg_message_id=NULL
+                WHERE campaign_id=$1;
+                """,
+                campaign_id,
+            )
+
+            # Enqueue deliveries for new subscribers.
+            await conn.execute(
+                """
+                INSERT INTO campaign_deliveries(campaign_id, customer_id, status, next_attempt_at)
+                SELECT $1, sc.customer_id, 'pending', now()
+                FROM shop_customers sc
+                WHERE sc.shop_id=$2 AND sc.status='subscribed'
+                ON CONFLICT (campaign_id, customer_id) DO NOTHING;
+                """,
+                campaign_id,
+                int(camp["shop_id"]),
+            )
+
+            # Clear unique clicks (otherwise stats will accumulate across runs).
+            await conn.execute("DELETE FROM clicks WHERE campaign_id=$1;", campaign_id)
+
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM campaign_deliveries WHERE campaign_id=$1;",
+                campaign_id,
+            )
+            total_i = int(total or 0)
+
+            await conn.execute(
+                """
+                UPDATE campaigns
+                SET status='sending',
+                    total_recipients=$2,
+                    sent_count=0,
+                    failed_count=0,
+                    blocked_count=0,
+                    click_count=0
+                WHERE id=$1;
+                """,
+                campaign_id,
+                total_i,
+            )
+
+            return total_i
 
 
 async def lease_due_deliveries(
@@ -989,12 +1246,14 @@ async def lease_due_deliveries(
                        d.customer_id,
                        d.attempt_count,
                        cu.tg_user_id AS tg_user_id,
+                       s.name AS shop_name,
                        c.text,
                        c.button_title,
                        c.url,
                        c.photo_file_id
                 FROM campaign_deliveries d
                 JOIN campaigns c ON c.id = d.campaign_id
+                JOIN shops s ON s.id = c.shop_id
                 JOIN customers cu ON cu.id = d.customer_id
                 WHERE d.status='pending'
                   AND d.next_attempt_at <= now()
@@ -1028,6 +1287,7 @@ async def lease_due_deliveries(
                     "customer_id": int(r["customer_id"]),
                     "attempt": int(r["attempt_count"] or 0) + 1,
                     "tg_user_id": int(r["tg_user_id"]),
+                    "shop_name": str(r.get("shop_name") or ""),
                     "text": str(r["text"]),
                     "button_title": str(r["button_title"] or ""),
                     "url": str(r["url"] or ""),
@@ -1132,13 +1392,10 @@ async def reschedule_delivery(
         )
 
 
-async def finalize_completed_campaigns(pool: asyncpg.Pool) -> list[dict]:
-    """Mark campaigns as completed when they have no pending deliveries left.
-
-    Returns a list of completed campaigns with fields needed for notifications.
-    """
+async def finalize_completed_campaigns(pool: asyncpg.Pool) -> int:
+    """Mark campaigns as completed when they have no pending deliveries left."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        row = await conn.fetchval(
             """
             WITH candidates AS (
                 SELECT c.id
@@ -1154,67 +1411,59 @@ async def finalize_completed_campaigns(pool: asyncpg.Pool) -> list[dict]:
             SET status='completed'
             FROM candidates
             WHERE c.id=candidates.id
-            RETURNING
-                c.id,
-                c.shop_id,
-                c.total_recipients,
-                c.sent_count,
-                c.failed_count,
-                c.blocked_count,
-                c.click_count;
+            RETURNING (SELECT COUNT(*) FROM candidates);
             """,
         )
-        return [dict(r) for r in rows]
+        return int(row or 0)
 
 
-async def get_seller_tg_id_by_id(pool: asyncpg.Pool, *, seller_id: int) -> int | None:
-    """Return seller tg_user_id by internal seller_id."""
+async def list_unnotified_completed_campaigns(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Return completed campaigns for which the seller has not been notified yet."""
     async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            "SELECT tg_user_id FROM sellers WHERE id=$1;",
-            int(seller_id),
-        )
-        return int(val) if val is not None else None
-
-
-
-async def get_shop_seller_tg_user_id(pool: asyncpg.Pool, *, shop_id: int) -> int | None:
-    """Return seller tg_user_id for a given shop."""
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    c.id AS campaign_id,
+                    c.shop_id,
+                    c.total_recipients,
+                    c.sent_count,
+                    c.failed_count,
+                    c.blocked_count,
+                    s.tg_user_id AS seller_tg_user_id,
+                    sh.name AS shop_name
+                FROM campaigns c
+                JOIN shops sh ON sh.id = c.shop_id
+                JOIN sellers s ON s.id = sh.seller_id
+                WHERE c.status='completed'
+                  AND c.completed_notified_at IS NULL
+                ORDER BY c.id ASC
+                LIMIT $1;
+                """,
+                int(limit),
+            )
+            return [dict(r) for r in rows]
+            
+            
+        except asyncpg.exceptions.UndefinedColumnError:
+            # Migration not applied yet — skip notifications without crashing worker.
+            return []
+async def mark_campaign_completed_notified(pool: asyncpg.Pool, *, campaign_id: int) -> None:
     async with pool.acquire() as conn:
-        val = await conn.fetchval(
-            """
-            SELECT s.tg_user_id
-            FROM shops sh
-            JOIN sellers s ON s.id = sh.seller_id
-            WHERE sh.id=$1;
-            """,
-            int(shop_id),
-        )
-        return int(val) if val is not None else None
-
-
-async def get_shop_audience_counts(pool: asyncpg.Pool, *, shop_id: int) -> dict:
-    """Return audience counts for a shop.
-
-    Keys: total, subscribed, unsubscribed.
-    """
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT
-                COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE status='subscribed')::int AS subscribed,
-                COUNT(*) FILTER (WHERE status='unsubscribed')::int AS unsubscribed
-            FROM shop_customers
-            WHERE shop_id=$1;
-            """,
-            int(shop_id),
-        )
-        if row is None:
-            return {"total": 0, "subscribed": 0, "unsubscribed": 0}
-        return dict(row)
-
-
+        try:
+            await conn.execute(
+                """
+                UPDATE campaigns
+                SET completed_notified_at = now()
+                WHERE id=$1 AND completed_notified_at IS NULL;
+                """,
+                int(campaign_id),
+            )
+            
+            
+            
+        except asyncpg.exceptions.UndefinedColumnError:
+            return
 async def record_campaign_click(
     pool: asyncpg.Pool,
     *,
@@ -1479,3 +1728,78 @@ async def get_admin_seller_details(pool: asyncpg.Pool, *, tg_user_id: int) -> di
             "spent_total": int(row["spent_total"] or 0),
             "last_campaign_at": row["last_campaign_at"],
         }
+# -------------------------
+# DEMO trial reminders (day 5 / day 7) + feedback
+# -------------------------
+
+async def list_due_trial_day5_reminders(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Sellers with trial_started_at older than 5 days and not notified yet."""
+    q = """
+        SELECT tg_user_id, trial_started_at
+        FROM sellers
+        WHERE trial_started_at IS NOT NULL
+          AND trial_day5_notified_at IS NULL
+          AND now() >= trial_started_at + interval '5 days'
+        ORDER BY trial_started_at ASC
+        LIMIT $1;
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(q, limit)
+    return [dict(r) for r in rows]
+
+
+async def list_due_trial_day7_reminders(pool: asyncpg.Pool, *, limit: int = 50) -> list[dict]:
+    """Sellers with trial_started_at older than 7 days and not notified yet."""
+    q = """
+        SELECT tg_user_id, trial_started_at
+        FROM sellers
+        WHERE trial_started_at IS NOT NULL
+          AND trial_day7_notified_at IS NULL
+          AND now() >= trial_started_at + interval '7 days'
+        ORDER BY trial_started_at ASC
+        LIMIT $1;
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(q, limit)
+    return [dict(r) for r in rows]
+
+
+async def mark_trial_day5_notified(pool: asyncpg.Pool, tg_user_id: int) -> None:
+    q = """
+        UPDATE sellers
+        SET trial_day5_notified_at = now()
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id)
+
+
+async def mark_trial_day7_notified(pool: asyncpg.Pool, tg_user_id: int) -> None:
+    q = """
+        UPDATE sellers
+        SET trial_day7_notified_at = now()
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id)
+
+
+async def save_trial_feedback(
+    pool: asyncpg.Pool,
+    tg_user_id: int,
+    *,
+    stage: str,
+    answer: str,
+    feedback_text: str | None,
+) -> None:
+    """Persist feedback/lead decisions from day5/day7 trial reminders."""
+    # NOTE: DB schema stores only the free-text feedback and timestamp.
+    # stage/answer are kept in the API for UX/analytics but are not persisted in MVP.
+    q = """
+        UPDATE sellers
+        SET trial_feedback_received_at = now(),
+            trial_feedback_text = $2
+        WHERE tg_user_id = $1;
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(q, tg_user_id, feedback_text)

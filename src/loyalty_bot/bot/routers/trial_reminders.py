@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import logging
+
+from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from loyalty_bot.config import settings
+from loyalty_bot.db import repo
+
+logger = logging.getLogger(__name__)
+
+router = Router()
+
+
+class TrialFeedback(StatesGroup):
+    waiting_text = State()
+
+
+def _admins() -> list[int]:
+    # Source of truth: ADMIN_TG_IDS in .env -> settings.admin_ids_set
+    try:
+        return sorted(settings.admin_ids_set)
+    except Exception:
+        return []
+
+
+def _open_chat_kb(*, tg_user_id: int) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    # Telegram deep-link to open chat with user.
+    kb.button(text="💬 Открыть чат", url=f"tg://user?id={tg_user_id}")
+    kb.adjust(1)
+    return kb
+
+
+async def _notify_admins_about_lead(*, bot, tg_user_id: int, username: str | None, text: str) -> None:
+    admins = _admins()
+    if not admins:
+        logger.warning("no admins configured for trial leads (ADMIN_TG_IDS is empty)")
+        return
+
+    for admin_id in admins:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=_open_chat_kb(tg_user_id=tg_user_id).as_markup())
+        except Exception:
+            logger.exception("failed to notify admin_id=%s", admin_id)
+
+
+@router.callback_query(F.data == "trial:day5:want")
+async def trial_day5_want(call: CallbackQuery) -> None:
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        await call.answer("Нет доступа")
+        return
+    u = call.from_user
+    username = f"@{u.username}" if u and u.username else "(no username)"
+    await call.answer("Ок")
+    await call.message.answer("✅ Спасибо, ваша заявка принята! Скоро свяжемся с вами в Telegram.")
+    await _notify_admins_about_lead(
+        bot=call.bot,
+        tg_user_id=u.id,
+        username=u.username,
+        text=f"🟩 Заявка (day5): tg_user_id={u.id} {username}",
+    )
+
+
+@router.callback_query(F.data == "trial:day5:later")
+async def trial_day5_later(call: CallbackQuery) -> None:
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        await call.answer("Нет доступа")
+        return
+    await call.answer("Ок")
+    await call.message.answer("⏳ Хорошо, продолжайте тестировать. Я напомню ближе к окончанию демо.")
+
+
+@router.callback_query(F.data == "trial:day7:want")
+async def trial_day7_want(call: CallbackQuery) -> None:
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        await call.answer("Нет доступа")
+        return
+    u = call.from_user
+    username = f"@{u.username}" if u and u.username else "(no username)"
+    await call.answer("Ок")
+    await call.message.answer("✅ Спасибо, ваша заявка принята! Скоро свяжемся с вами в Telegram.")
+    await _notify_admins_about_lead(
+        bot=call.bot,
+        tg_user_id=u.id,
+        username=u.username,
+        text=f"🟩 Заявка (day7): tg_user_id={u.id} {username}",
+    )
+
+
+@router.callback_query(F.data == "trial:day7:no")
+async def trial_day7_no(call: CallbackQuery, state: FSMContext) -> None:
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        await call.answer("Нет доступа")
+        return
+    await call.answer("Ок")
+    await state.set_state(TrialFeedback.waiting_text)
+    await call.message.answer("🚫 Понял. Напишите, пожалуйста, коротко причину (в свободной форме):")
+
+
+@router.message(TrialFeedback.waiting_text)
+async def trial_feedback_text(message: Message, state: FSMContext, pool) -> None:
+    if getattr(settings, "bot_mode", "demo") != "demo":
+        await message.answer("Нет доступа")
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Напишите текстом, пожалуйста.")
+        return
+
+    u = message.from_user
+    username = f"@{u.username}" if u and u.username else "(no username)"
+
+    try:
+        await repo.save_trial_feedback(
+            pool,
+            tg_user_id=u.id,
+            stage="day7",
+            answer="no",
+            feedback_text=text,
+        )
+
+    except Exception:
+        logger.exception("failed to save trial feedback")
+
+    await _notify_admins_about_lead(
+        bot=message.bot,
+        tg_user_id=u.id,
+        username=u.username,
+        text=f"🟥 Отказ (day7): tg_user_id={u.id} {username}\nПричина: {text}",
+    )
+
+    await state.clear()
+    await message.answer("Спасибо! Мы учтём обратную связь.")

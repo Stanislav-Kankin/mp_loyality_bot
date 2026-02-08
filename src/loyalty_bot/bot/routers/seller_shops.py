@@ -31,6 +31,8 @@ from loyalty_bot.db.repo import (
     get_shop_welcome,
     get_shop_audience_counts,
     list_seller_shops,
+    count_seller_shops,
+    get_seller_trial,
     update_shop_welcome,
 )
 
@@ -74,7 +76,37 @@ async def _is_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
     if _is_admin(tg_id):
         return True
     # Prefer DB allowlist; keep legacy env SELLER_TG_IDS as fallback.
-    return await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set)
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return True
+    # DEMO sellers (trial) are treated as sellers only inside DEMO bot.
+    if not settings.is_demo_bot:
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    """True if user is a DEMO seller (trial active) but not an admin/allowlisted seller."""
+    if not settings.is_demo_bot:
+        return False
+    if _is_admin(tg_id):
+        return False
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
+
+
+async def _is_demo_seller(pool: asyncpg.Pool, tg_id: int) -> bool:
+    """True if user is in DEMO trial (not admin/allowlisted), used for DEMO restrictions."""
+    if not settings.is_demo_bot:
+        return False
+    if _is_admin(tg_id):
+        return False
+    if await is_seller_allowed(pool, tg_id) or (tg_id in settings.seller_ids_set):
+        return False
+    trial = await get_seller_trial(pool, seller_tg_user_id=tg_id)
+    return bool(trial and trial.get("trial_started_at"))
 
 
 def _shop_deeplink(bot_username: str, shop_id: int) -> str:
@@ -129,10 +161,16 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if isinstance(ctx, str) and ctx.startswith("c") and ctx[1:].isdigit():
         back_cb = f"campaign:open:{int(ctx[1:])}"
 
+    demo_note = ""
+    if await _is_demo_seller(pool, tg_id):
+        demo_note = "\n\n⚠️ В демо-режиме покупки отключены."
+
     text = (
         "💰 Покупка рассылок\n"
-        f"Текущий баланс: {credits}\n\n"
+        f"Текущий"
+        f" баланс: {credits}\n\n"
         "Выберите пакет и оплатите через Telegram Payments (ЮKassa)."
+        f"{demo_note}"
     )
     await cb.message.edit_text(text, reply_markup=credits_packages_menu(back_cb=back_cb, context=ctx))
     await cb.answer()
@@ -143,6 +181,11 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     """Start credits pack payment by sending Telegram invoice."""
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    # DEMO bot: purchases are forbidden.
+    if await _is_demo_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
 
@@ -204,7 +247,27 @@ async def seller_shops_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
-    await cb.message.edit_text("Магазины:", reply_markup=shops_menu())
+
+    shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    # Always show the "Create shop" button (in DEMO it will be blocked after 1 shop).
+    kb.button(text="➕ Создать магазин", callback_data="shops:create")
+
+    if shops:
+        for sh in shops[:10]:
+            prefix = "✅" if sh["is_active"] else "⛔️"
+            kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
+        title = "Ваши магазины:"
+    else:
+        title = "У вас пока нет магазинов."
+
+    kb.button(text="⬅️ Назад", callback_data="seller:home")
+    kb.adjust(1)
+
+    await cb.message.edit_text(title, reply_markup=kb.as_markup())
     await cb.answer()
 
 
@@ -220,6 +283,13 @@ async def shops_create_start(cb: CallbackQuery, state: FSMContext, pool: asyncpg
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
         return
+
+    # DEMO restriction: only 1 shop.
+    if await _is_demo_seller(pool, tg_id):
+        shops_cnt = await count_seller_shops(pool, seller_tg_user_id=tg_id)
+        if shops_cnt >= 1:
+            await cb.answer("В демо можно создать только 1 магазин.", show_alert=True)
+            return
     await state.clear()
     await state.set_state(ShopCreate.name)
     await cb.message.edit_text("Введите название магазина (текстом):")
@@ -262,6 +332,14 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
         await message.answer("Ошибка состояния. Начните заново: /seller")
         return
 
+    # DEMO restriction: only 1 shop (double-check before insert).
+    if await _is_demo_seller(pool, tg_id):
+        shops_cnt = await count_seller_shops(pool, seller_tg_user_id=tg_id)
+        if shops_cnt >= 1:
+            await state.clear()
+            await message.answer("В демо можно создать только 1 магазин.")
+            return
+
     shop_id = await create_shop(pool, seller_tg_user_id=tg_id, name=name, category=category)
     await state.clear()
 
@@ -279,29 +357,11 @@ async def shops_create_category(message: Message, state: FSMContext, pool: async
 
 @router.callback_query(F.data == "shops:list")
 async def shops_list(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    tg_id = cb.from_user.id
-    if not await _is_seller(pool, tg_id):
-        await cb.answer("Нет доступа", show_alert=True)
-        return
+    """Backward-compatible handler for old keyboard button "📋 Мои магазины".
 
-    shops = await list_seller_shops(pool, seller_tg_user_id=tg_id)
-    if not shops:
-        await cb.message.edit_text("У вас пока нет магазинов.", reply_markup=shops_menu())
-        await cb.answer()
-        return
-
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-    kb = InlineKeyboardBuilder()
-    for sh in shops[:10]:
-        prefix = "✅" if sh["is_active"] else "⛔️"
-        kb.button(text=f"{prefix} 🏪 {sh['name']}", callback_data=f"shop:open:{sh['id']}")
-    kb.button(text="⬅️ Назад", callback_data="seller:shops")
-    kb.adjust(1)
-
-    await cb.message.edit_text("Ваши магазины:", reply_markup=kb.as_markup())
-    await cb.answer()
-
+    New UX: open shops list directly from seller:shops.
+    """
+    await seller_shops_cb(cb, pool)
 
 @router.callback_query(F.data.startswith("shop:open:"))
 async def shop_open(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
@@ -389,30 +449,42 @@ async def shop_stats(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         return
 
     stats = await get_shop_audience_counts(pool, shop_id)
-    gender_unknown = int(stats.get("gender_u", 0)) + int(stats.get("gender_unknown", 0))
+    gender = stats.get("gender") or {}
+    age = stats.get("age") or {}
+    g_male = int(gender.get("male", 0))
+    g_female = int(gender.get("female", 0))
+    g_unknown = int(gender.get("unknown", 0))
+
+    a_0_17 = int(age.get("0_17", 0))
+    a_18_27 = int(age.get("18_27", 0))
+    a_28_35 = int(age.get("28_35", 0))
+    a_36_45 = int(age.get("36_45", 0))
+    a_46_49 = int(age.get("46_49", 0))
+    a_50_plus = int(age.get("50_plus", 0))
+    a_unknown = int(age.get("unknown", 0))
 
 
     text_msg = f"""📊 Подписчики магазина
 
 🏪 {shop['name']} (#{shop_id})
 
-👥 Всего записей: {stats['total']}
-✅ Активные: {stats['subscribed']}
-🔕 Отписанные: {stats['unsubscribed']}
+👥 Всего записей: {int(stats.get('total', 0))}
+✅ Активные: {int(stats.get('subscribed', 0))}
+🔕 Отписанные: {int(stats.get('unsubscribed', 0))}
 
 👤 Пол (среди активных):
-  👨 Муж: {stats['gender_m']}
-  👩 Жен: {stats['gender_f']}
-  🤷 Не указан: {gender_unknown}
+  👨 Муж: {g_male}
+  👩 Жен: {g_female}
+  🤷 Не указан: {g_unknown}
 
 🎂 Возраст (среди активных):
-  ≤17: {stats['age_u17']}
-  18–27: {stats['age_18_27']}
-  28–35: {stats['age_28_35']}
-  36–45: {stats['age_36_45']}
-  46–49: {stats['age_46_49']}
-  50+: {stats['age_50_plus']}
-  Не указан: {stats['age_unknown']}
+  ≤17: {a_0_17}
+  18–27: {a_18_27}
+  28–35: {a_28_35}
+  36–45: {a_36_45}
+  46–49: {a_46_49}
+  50+: {a_50_plus}
+  Не указан: {a_unknown}
 
 ℹ️ Пол/возраст считаются среди активных (подписанных)."""
 
@@ -607,7 +679,13 @@ async def _shop_welcome_finish_update(*, message: Message, pool: asyncpg.Pool, t
     )
 
     await state.clear()
-    await message.answer("Welcome-сообщение обновлено ✅")
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👁 Посмотреть как покупатель", callback_data=f"shopwelcome:preview:{shop_id}")
+    kb.adjust(1)
+
+    await message.answer("Welcome-сообщение обновлено ✅", reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data == "shopwelcome:skip:text")
