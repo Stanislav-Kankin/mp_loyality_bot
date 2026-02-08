@@ -4,6 +4,7 @@ import logging
 import math
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -12,6 +13,16 @@ from superadmin_bot.config import load_settings
 from superadmin_bot.db import ALIVE_WINDOW_MINUTES, create_pool, ensure_schema, get_instance, list_instances
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_edit_text(message: Message, text: str, reply_markup=None) -> None:
+    """Ignore 'message is not modified' errors for better UX."""
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise
 
 
 def _fmt_ts(ts) -> str:
@@ -52,18 +63,22 @@ def _instance_status_icon(r) -> str:
     return "🔴"
 
 
+def _fmt_mode(mode: str) -> str:
+    return {"brand": "бренд", "demo": "демо"}.get(mode, mode)
+
+
 def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
     kb = InlineKeyboardBuilder()
 
     # Filters (2 rows)
     kb.button(text="Все", callback_data=f"inst:list:all:{status}:1")
-    kb.button(text="Brand", callback_data=f"inst:list:brand:{status}:1")
-    kb.button(text="Demo", callback_data=f"inst:list:demo:{status}:1")
+    kb.button(text="Бренд", callback_data=f"inst:list:brand:{status}:1")
+    kb.button(text="Демо", callback_data=f"inst:list:demo:{status}:1")
     kb.adjust(3)
 
-    kb.button(text="Alive", callback_data=f"inst:list:{mode}:alive:1")
-    kb.button(text="Dead", callback_data=f"inst:list:{mode}:dead:1")
-    kb.button(text="Any", callback_data=f"inst:list:{mode}:all:1")
+    kb.button(text="Живые", callback_data=f"inst:list:{mode}:alive:1")
+    kb.button(text="Мёртвые", callback_data=f"inst:list:{mode}:dead:1")
+    kb.button(text="Любые", callback_data=f"inst:list:{mode}:all:1")
     kb.adjust(3)
 
     # Instances list
@@ -71,7 +86,7 @@ def _build_instances_kb(rows, *, mode: str, status: str, page: int, pages: int):
         icon = _instance_status_icon(r)
         name = r["instance_name"]
         m = r["mode"]
-        kb.button(text=f"{icon} {name} ({m})", callback_data=f"inst:open:{r['instance_id']}:{mode}:{status}:{page}")
+        kb.button(text=f"{icon} {name} ({_fmt_mode(m)})", callback_data=f"inst:open:{r['instance_id']}:{mode}:{status}:{page}")
         kb.adjust(1)
 
     # Pagination
@@ -105,14 +120,16 @@ async def _render_instances(target, pool, *, mode: str, status: str, page: int, 
         rows, total = await list_instances(pool, mode=mode, status=status, limit=page_size, offset=offset)
 
     header = "📦 Инстансы"
-    subtitle = f"Фильтры: mode={mode}, status={status} | alive окно: {ALIVE_WINDOW_MINUTES}м"
+    mode_ru = {"all": "все", "brand": "бренд", "demo": "демо"}.get(mode, mode)
+    status_ru = {"all": "любые", "alive": "живые", "dead": "мёртвые"}.get(status, status)
+    subtitle = f"Фильтры: режим={mode_ru}, статус={status_ru} | alive окно: {ALIVE_WINDOW_MINUTES}м"
     text = f"{header}\n{subtitle}"
     kb = _build_instances_kb(rows, mode=mode, status=status, page=page, pages=pages)
 
     if isinstance(target, Message):
         await target.answer(text, reply_markup=kb)
     else:
-        await target.message.edit_text(text, reply_markup=kb)
+        await _safe_edit_text(target.message, text, reply_markup=kb)
 
 
 async def _render_instance_card(cb: CallbackQuery, pool, *, instance_id: str, mode: str, status: str, page: int):
@@ -122,13 +139,14 @@ async def _render_instance_card(cb: CallbackQuery, pool, *, instance_id: str, mo
         return
     icon = _instance_status_icon(r)
     text = (
-        f"{icon} {r['instance_name']} ({r['mode']})\n"
+        f"{icon} {r['instance_name']} ({_fmt_mode(r['mode'])})\n"
         f"id: {r['instance_id']}\n"
         f"bot: {_fmt_ts(r['bot_last_seen'])}\n"
         f"worker: {_fmt_ts(r['worker_last_seen'])}\n\n"
         f"{_fmt_metrics(r)}"
     )
-    await cb.message.edit_text(
+    await _safe_edit_text(
+        cb.message,
         text,
         reply_markup=_build_instance_card_kb(instance_id=instance_id, mode=mode, status=status, page=page),
     )
