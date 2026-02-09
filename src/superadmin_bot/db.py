@@ -44,6 +44,47 @@ async def ensure_schema(pool: asyncpg.Pool) -> None:
                 deliveries_blocked_today BIGINT NOT NULL DEFAULT 0,
                 subscribers_active BIGINT NOT NULL DEFAULT 0
             );
+
+            -- Payment Hub: cross-instance payment orders live in CENTRAL DB.
+            CREATE TABLE IF NOT EXISTS payment_orders (
+                id UUID PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                buyer_tg_id BIGINT NOT NULL,
+                pack_code TEXT NOT NULL,
+                amount_minor INT NOT NULL,
+                currency TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                paid_at TIMESTAMPTZ NULL,
+                fulfilled_at TIMESTAMPTZ NULL,
+                provider_payment_charge_id TEXT NULL,
+                invoice_payload TEXT NOT NULL
+            );
+
+            -- Protect against invalid transitions and duplicates.
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'payment_orders_status_chk'
+              ) THEN
+                ALTER TABLE payment_orders
+                  ADD CONSTRAINT payment_orders_status_chk
+                  CHECK (status IN ('pending', 'paid', 'fulfilled', 'expired', 'cancelled'));
+              END IF;
+            END $$;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_orders_invoice_payload
+              ON payment_orders (invoice_payload);
+
+            -- provider_payment_charge_id is only known after successful_payment.
+            -- UNIQUE allows multiple NULLs in Postgres, which is what we want.
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_orders_provider_charge
+              ON payment_orders (provider_payment_charge_id);
+
+            CREATE INDEX IF NOT EXISTS ix_payment_orders_instance_buyer
+              ON payment_orders (instance_id, buyer_tg_id, created_at DESC);
             """
         )
 
