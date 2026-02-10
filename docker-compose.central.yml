@@ -30,6 +30,20 @@ services:
       - ./logs:/app/logs
     command: ["python", "-m", "superadmin_bot.app"]
 
+  payment_hub:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ${HUB_ENV_FILE:-.env.hub}
+    networks:
+      - central_net
+    depends_on:
+      central_postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "-m", "payment_hub_bot.app"]
+
 volumes:
   # Reuse existing volume by default (current server state).
   central_pg_data:
