@@ -15,7 +15,9 @@ class HubSettings(BaseSettings):
     currency: str = Field(default="RUB", alias="CURRENCY")
 
     hub_pack_1_minor: int = Field(default=100_000, alias="HUB_PACK_1_MINOR")
+    hub_pack_3_minor: int = Field(default=289_000, alias="HUB_PACK_3_MINOR")
     hub_pack_10_minor: int = Field(default=2_750_000, alias="HUB_PACK_10_MINOR")
+    # optional for future pricing
     hub_pack_30_minor: int = Field(default=7_500_000, alias="HUB_PACK_30_MINOR")
 
     order_ttl_seconds: int = Field(default=86_400, alias="ORDER_TTL_SECONDS")
@@ -28,6 +30,7 @@ class HubSettings(BaseSettings):
     def pack_amount_minor(self, pack_code: str) -> int | None:
         mapping = {
             "pack_1": self.hub_pack_1_minor,
+            "pack_3": self.hub_pack_3_minor,
             "pack_10": self.hub_pack_10_minor,
             "pack_30": self.hub_pack_30_minor,
         }

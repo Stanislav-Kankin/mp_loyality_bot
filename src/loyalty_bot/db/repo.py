@@ -223,6 +223,33 @@ async def has_seller_credit_tx_by_tg_charge_id(
         return row is not None
 
 
+async def has_seller_credit_tx_by_invoice_payload(
+    pool: asyncpg.Pool,
+    *,
+    seller_id: int,
+    invoice_payload: str | None,
+) -> bool:
+    """Return True if a seller_credit_transactions row exists for this invoice payload.
+
+    Used for idempotency when fulfillment happens via Payment Hub (no tg_charge_id in client bot).
+    """
+    payload = (invoice_payload or "").strip()
+    if not payload:
+        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1
+            FROM seller_credit_transactions
+            WHERE seller_id=$1 AND invoice_payload=$2
+            LIMIT 1;
+            """,
+            seller_id,
+            payload,
+        )
+        return row is not None
+
+
 # ------------------------
 # Customers
 # ------------------------
