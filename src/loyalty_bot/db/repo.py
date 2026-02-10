@@ -1114,7 +1114,8 @@ async def start_campaign_sending(
                     total_recipients=$2,
                     sent_count=0,
                     failed_count=0,
-                    blocked_count=0
+                    blocked_count=0,
+                    completed_notified_at=NULL
                 WHERE id=$1;
                 """,
                 campaign_id,
@@ -1240,7 +1241,8 @@ async def restart_campaign_sending(
                     sent_count=0,
                     failed_count=0,
                     blocked_count=0,
-                    click_count=0
+                    click_count=0,
+                    completed_notified_at=NULL
                 WHERE id=$1;
                 """,
                 campaign_id,
