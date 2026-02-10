@@ -8,9 +8,15 @@ from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message, LabeledPrice
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from loyalty_bot.config import settings
+from loyalty_bot.central_payments import (
+    build_hub_deeplink,
+    create_payment_order,
+    get_payment_order,
+    mark_order_fulfilled,
+)
 from loyalty_bot.bot.keyboards import (
     cancel_kb,
     cancel_skip_kb,
@@ -23,6 +29,7 @@ from loyalty_bot.bot.keyboards import (
 from loyalty_bot.bot.utils.qr import make_qr_png_bytes
 from loyalty_bot.db.repo import (
     add_seller_credits,
+    has_seller_credit_tx_by_invoice_payload,
     create_shop,
     ensure_seller,
     get_seller_credits,
@@ -177,8 +184,11 @@ async def credits_menu_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
 
 
 @router.callback_query(F.data.startswith("credits:pkg:"))
-async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
-    """Start credits pack payment by sending Telegram invoice."""
+async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool, central_pool: asyncpg.Pool | None) -> None:
+    """Start credits pack payment via Payment Hub.
+
+    Client bot creates a pending order in CENTRAL DB and sends the user to Hub bot via deep link.
+    """
     tg_id = cb.from_user.id
     if not await _is_seller(pool, tg_id):
         await cb.answer("Нет доступа", show_alert=True)
@@ -201,35 +211,48 @@ async def credits_pkg_buy_cb(cb: CallbackQuery, pool: asyncpg.Pool) -> None:
         await cb.answer("Некорректный пакет", show_alert=True)
         return
 
-    amount_minor_map = {
-        1: settings.credits_pack_1_minor,
-        3: settings.credits_pack_3_minor,
-        10: settings.credits_pack_10_minor,
-    }
-    amount_minor = int(amount_minor_map[qty])
+    if central_pool is None:
+        await cb.answer("Оплата временно недоступна. Попробуйте позже.", show_alert=True)
+        return
 
-    title = f"Пакет рассылок: {qty}"
-    description = f"Покупка пакета на {qty} рассылок."
-    payload = f"credits_pack:{qty}" + (f":{ctx}" if ctx else "")
+    if not (settings.hub_bot_username or "").strip():
+        await cb.answer("Оплата не настроена (HUB_BOT_USERNAME)", show_alert=True)
+        return
+    if not (settings.instance_id or "").strip():
+        await cb.answer("Оплата не настроена (INSTANCE_ID)", show_alert=True)
+        return
 
-    logger.info(
-        "send_invoice credits_pack qty=%s amount_minor=%s tg_id=%s payload=%s",
-        qty,
-        amount_minor,
-        tg_id,
-        payload,
+    try:
+        order = await create_payment_order(central_pool, buyer_tg_id=tg_id, qty=qty)
+    except Exception:
+        logger.exception("failed to create payment order in central")
+        await cb.answer("Ошибка создания заказа. Попробуйте позже.", show_alert=True)
+        return
+
+    order_id = str(order.get("id") or "")
+    if not order_id:
+        await cb.answer("Ошибка создания заказа. Попробуйте позже.", show_alert=True)
+        return
+
+    deeplink = build_hub_deeplink(order_id)
+    check_cb = f"pay:check:{order_id}" + (f":{ctx}" if ctx else "")
+    back_cb = f"credits:menu:{ctx}" if ctx else "credits:menu"
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Оплатить", url=deeplink)
+    kb.button(text="✅ Проверить оплату / начислить", callback_data=check_cb)
+    kb.button(text="⬅️ Назад", callback_data=back_cb)
+    kb.adjust(1)
+
+    await cb.message.answer(
+        "🧾 Заказ создан.\n\n"
+        "1) Нажмите «💳 Оплатить» и завершите оплату в платежном боте.\n"
+        "2) Затем вернитесь сюда и нажмите «✅ Проверить оплату / начислить».",
+        reply_markup=kb.as_markup(),
     )
-
-    await cb.bot.send_invoice(
-        chat_id=tg_id,
-        title=title,
-        description=description,
-        payload=payload,
-        provider_token=settings.payment_provider_token,
-        currency=settings.currency,
-        prices=[LabeledPrice(label=title, amount=amount_minor)],
-    )
-    await cb.answer("Счет выставлен. Проверьте сообщение с оплатой 👇")
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("credits:test:3"))
@@ -239,6 +262,118 @@ async def credits_test_buy_3_cb(cb: CallbackQuery) -> None:
     Kept to avoid crashes if old messages with callbacks are still around.
     """
     await cb.answer("Тестовая покупка отключена.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("pay:check:"))
+async def pay_check_and_fulfill_cb(
+    cb: CallbackQuery,
+    pool: asyncpg.Pool,
+    central_pool: asyncpg.Pool | None,
+) -> None:
+    """Check payment status in CENTRAL DB and grant credits locally (idempotent)."""
+    tg_id = cb.from_user.id
+    if not await _is_seller(pool, tg_id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    if central_pool is None:
+        await cb.answer("Оплата временно недоступна. Попробуйте позже.", show_alert=True)
+        return
+
+    parts = (cb.data or "").split(":")
+    # expected: pay:check:<order_id>[:ctx]
+    if len(parts) < 3:
+        await cb.answer("Некорректные данные", show_alert=True)
+        return
+
+    order_id = (parts[2] or "").strip()
+    ctx = parts[3] if len(parts) >= 4 and parts[3] else None
+
+    order = await get_payment_order(central_pool, order_id=order_id, buyer_tg_id=tg_id)
+    if order is None:
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+
+    status = (order.get("status") or "").strip()
+    if status == "pending":
+        await cb.answer("Оплата ещё не получена", show_alert=True)
+        return
+    if status not in {"paid", "fulfilled"}:
+        await cb.answer(f"Заказ сейчас нельзя обработать: {status}", show_alert=True)
+        return
+
+    pack_code = (order.get("pack_code") or "").strip()
+    qty = 0
+    if pack_code.startswith("pack_"):
+        tail = pack_code.removeprefix("pack_")
+        if tail.isdigit():
+            qty = int(tail)
+    if qty not in (1, 3, 10):
+        await cb.answer("Ошибка пакета заказа", show_alert=True)
+        logger.warning("pay_check: unexpected pack_code order_id=%s pack_code=%s", order_id, pack_code)
+        return
+
+    invoice_payload = (order.get("invoice_payload") or "").strip()
+    provider_charge = (order.get("provider_payment_charge_id") or "").strip() or None
+
+    seller = await ensure_seller(pool, tg_id)
+    seller_id = int(seller["seller_id"]) if isinstance(seller, dict) else int(seller)
+
+    already = await has_seller_credit_tx_by_invoice_payload(
+        pool,
+        seller_id=seller_id,
+        invoice_payload=invoice_payload,
+    )
+    if already:
+        # Best-effort: mark fulfilled in central if not marked yet.
+        try:
+            await mark_order_fulfilled(central_pool, order_id=order_id, buyer_tg_id=tg_id)
+        except Exception:
+            logger.exception("pay_check: failed to mark fulfilled (already credited) order_id=%s", order_id)
+
+        credits = await get_seller_credits(pool, seller_tg_user_id=tg_id)
+        await cb.answer("Уже начислено ✅", show_alert=True)
+
+        back_cb = f"credits:menu:{ctx}" if ctx else "credits:menu"
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Назад", callback_data=back_cb)
+        kb.adjust(1)
+        await cb.message.answer(f"✅ Оплата уже обработана. Баланс: {credits}", reply_markup=kb.as_markup())
+        return
+
+    try:
+        new_balance = await add_seller_credits(
+            pool,
+            seller_id=seller_id,
+            delta=qty,
+            reason="credits_purchase_hub",
+            invoice_payload=invoice_payload,
+            provider_payment_charge_id=provider_charge,
+        )
+    except Exception:
+        logger.exception("pay_check: failed to add credits order_id=%s seller_id=%s", order_id, seller_id)
+        await cb.answer("Ошибка начисления. Напишите в поддержку.", show_alert=True)
+        return
+
+    try:
+        await mark_order_fulfilled(central_pool, order_id=order_id, buyer_tg_id=tg_id)
+    except Exception:
+        logger.exception("pay_check: failed to mark fulfilled order_id=%s", order_id)
+
+    back_cb = f"credits:menu:{ctx}" if ctx else "credits:menu"
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data=back_cb)
+    kb.adjust(1)
+
+    await cb.message.answer(
+        f"✅ Оплата подтверждена. Начислено +{qty} рассылок.\nБаланс: {new_balance}",
+        reply_markup=kb.as_markup(),
+    )
+    await cb.answer()
 
 
 @router.callback_query(F.data == "seller:shops")

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     instance_name: str = Field(default="", alias="INSTANCE_NAME")
     metrics_push_interval_seconds: int = Field(default=60, alias="METRICS_PUSH_INTERVAL_SECONDS")
 
+    # --- Payment Hub (optional; used for credits purchase) ---
+    hub_bot_username: str = Field(default="", alias="HUB_BOT_USERNAME")
+
     @staticmethod
     def _parse_ids(value: str) -> set[int]:
         raw = (value or "").strip()

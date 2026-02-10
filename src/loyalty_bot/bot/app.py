@@ -52,7 +52,7 @@ async def main() -> None:
 
         hb_task = asyncio.create_task(_hb_loop())
     dp = Dispatcher()
-    dp.update.middleware(DbMiddleware(pool))
+    dp.update.middleware(DbMiddleware(pool, central_pool=central_pool))
 
     dp.include_router(start_router)
     dp.include_router(trial_reminders_router)
