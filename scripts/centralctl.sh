@@ -1,26 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# centralctl.sh — управление central стеком (central_postgres + superadmin + payment_hub)
-#
-# Ожидания:
-#   MP_REPO_DIR=/root/mp_loyality_bot
-#   HUB_ENV_FILE=/root/clients/payment_hub/.env
-#   CENTRAL_COMPOSE=$MP_REPO_DIR/docker-compose.central.yml
-#   CENTRAL_NET_NAME=mp_central_net
-#
-# Usage:
-#   ./scripts/centralctl.sh help
-#   ./scripts/centralctl.sh ps
-#   ./scripts/centralctl.sh up
-#   ./scripts/centralctl.sh rebuild
-#   ./scripts/centralctl.sh down
-#   ./scripts/centralctl.sh restart <service>
-#   ./scripts/centralctl.sh logs <service> [--tail N]
-
 usage() {
   cat <<'USAGE'
-centralctl.sh — управление central стеком
+centralctl.sh — управление central стеком (central_postgres + superadmin + payment_hub)
 
 Команды:
   help
@@ -49,7 +32,8 @@ CMD="${1:-help}"
 SERVICE="${2:-}"
 
 run_compose() {
-  HUB_ENV_FILE="${HUB_ENV_FILE}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CENTRAL_COMPOSE}" "$@"
+  HUB_ENV_FILE="${HUB_ENV_FILE}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}" \
+    docker compose -f "${CENTRAL_COMPOSE}" "$@"
 }
 
 case "${CMD}" in

@@ -1,28 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# clientctl.sh — управление клиентскими инстансами mp_loyality_bot
-#
-# Ожидания по путям (можно переопределять env-переменными):
-#   MP_REPO_DIR=/root/mp_loyality_bot
-#   CLIENTS_DIR=/root/clients
-#   CLIENT_COMPOSE=$MP_REPO_DIR/docker-compose.client.yml
-#   CENTRAL_NET_NAME=mp_central_net
-#
-# Usage:
-#   ./scripts/clientctl.sh help
-#   ./scripts/clientctl.sh ps <client>
-#   ./scripts/clientctl.sh up <client>
-#   ./scripts/clientctl.sh rebuild <client>
-#   ./scripts/clientctl.sh down <client>
-#   ./scripts/clientctl.sh restart <client> [service...]
-#   ./scripts/clientctl.sh logs <client> [service] [--tail N]
-#   ./scripts/clientctl.sh env <client>            # показать ключевые env (без токена)
-#   ./scripts/clientctl.sh exec <client> <cmd...>  # выполнить команду в контейнере bot
-
 usage() {
   cat <<'USAGE'
-clientctl.sh — управление клиентскими инстансами
+clientctl.sh — управление клиентскими инстансами (bot + worker + postgres)
 
 Команды:
   help
@@ -38,6 +19,7 @@ clientctl.sh — управление клиентскими инстансам�
 Переменные окружения (опционально):
   MP_REPO_DIR        (default: /root/mp_loyality_bot)
   CLIENTS_DIR        (default: /root/clients)
+  CLIENT_COMPOSE     (default: $MP_REPO_DIR/docker-compose.client.yml)
   CENTRAL_NET_NAME   (default: mp_central_net)
 USAGE
 }
@@ -75,7 +57,8 @@ run_compose() {
     exit 2
   fi
 
-  CLIENT_ENV_FILE="${env_file}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CLIENT_COMPOSE}" -p "${c}" "$@"
+  CLIENT_ENV_FILE="${env_file}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}" \
+    docker compose -f "${CLIENT_COMPOSE}" -p "${c}" "$@"
 }
 
 case "${CMD}" in
@@ -118,7 +101,6 @@ case "${CMD}" in
   env)
     need_client
     ENV_FILE="$(env_file_for "${CLIENT}")"
-    # Печатаем только безопасные настройки (без токенов/паролей).
     grep -E '^(BOT_MODE|ADMIN_TG_IDS|INSTANCE_ID|INSTANCE_NAME|POSTGRES_DB|POSTGRES_USER|DATABASE_DSN|CENTRAL_DATABASE_DSN|HUB_BOT_USERNAME|CURRENCY|PRICE_PACK_1_MINOR|PRICE_PACK_3_MINOR|PRICE_PACK_10_MINOR)=' "${ENV_FILE}" || true
     ;;
   exec)

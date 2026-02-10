@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# newclient.sh — создание папки клиента + копирование env-шаблона
-#
-# Usage:
-#   ./scripts/newclient.sh <client> [--from <template_env>]
-#
-# По умолчанию шаблон берём из /root/clients/test_client2/.env
-
 usage() {
   cat <<'USAGE'
 newclient.sh — создать нового клиента (папка + env)
@@ -55,7 +48,6 @@ fi
 
 cp "${TEMPLATE_ENV}" "${DEST_ENV}"
 
-# Автоподстановка INSTANCE_ID
 if grep -qE '^INSTANCE_ID=' "${DEST_ENV}"; then
   sed -i "s/^INSTANCE_ID=.*/INSTANCE_ID=${CLIENT}/" "${DEST_ENV}"
 else
