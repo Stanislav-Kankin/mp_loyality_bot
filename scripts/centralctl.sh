@@ -48,8 +48,8 @@ CENTRAL_NET_NAME="${CENTRAL_NET_NAME:-mp_central_net}"
 CMD="${1:-help}"
 SERVICE="${2:-}"
 
-compose_base() {
-  HUB_ENV_FILE="${HUB_ENV_FILE}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CENTRAL_COMPOSE}"
+run_compose() {
+  HUB_ENV_FILE="${HUB_ENV_FILE}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CENTRAL_COMPOSE}" "$@"
 }
 
 case "${CMD}" in
@@ -57,23 +57,23 @@ case "${CMD}" in
     usage
     ;;
   ps)
-    compose_base ps
+    run_compose ps
     ;;
   up)
-    compose_base up -d --build
+    run_compose up -d --build
     ;;
   rebuild)
-    compose_base up -d --build --force-recreate
+    run_compose up -d --build --force-recreate
     ;;
   down)
-    compose_base down
+    run_compose down
     ;;
   restart)
     if [[ -z "${SERVICE}" ]]; then
       echo "ERROR: restart requires service name" >&2
       exit 2
     fi
-    compose_base restart "${SERVICE}"
+    run_compose restart "${SERVICE}"
     ;;
   logs)
     if [[ -z "${SERVICE}" ]]; then
@@ -84,7 +84,7 @@ case "${CMD}" in
     if [[ "${3:-}" == "--tail" ]]; then
       TAIL="${4:-200}"
     fi
-    compose_base logs -f --tail="${TAIL}" "${SERVICE}"
+    run_compose logs -f --tail="${TAIL}" "${SERVICE}"
     ;;
   *)
     echo "ERROR: unknown cmd: ${CMD}" >&2

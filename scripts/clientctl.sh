@@ -63,17 +63,19 @@ env_file_for() {
   echo "${CLIENTS_DIR}/${c}/.env"
 }
 
-compose_base() {
+run_compose() {
+  # run_compose <client> <docker-compose args...>
   local c="$1"
+  shift || true
+
   local env_file
   env_file="$(env_file_for "${c}")"
-
   if [[ ! -f "${env_file}" ]]; then
     echo "ERROR: env file not found: ${env_file}" >&2
     exit 2
   fi
 
-  CLIENT_ENV_FILE="${env_file}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CLIENT_COMPOSE}" -p "${c}"
+  CLIENT_ENV_FILE="${env_file}" CENTRAL_NET_NAME="${CENTRAL_NET_NAME}"     docker compose -f "${CLIENT_COMPOSE}" -p "${c}" "$@"
 }
 
 case "${CMD}" in
@@ -82,19 +84,19 @@ case "${CMD}" in
     ;;
   ps)
     need_client
-    compose_base "${CLIENT}" ps
+    run_compose "${CLIENT}" ps
     ;;
   up)
     need_client
-    compose_base "${CLIENT}" up -d --build
+    run_compose "${CLIENT}" up -d --build
     ;;
   rebuild)
     need_client
-    compose_base "${CLIENT}" up -d --build --force-recreate
+    run_compose "${CLIENT}" up -d --build --force-recreate
     ;;
   down)
     need_client
-    compose_base "${CLIENT}" down
+    run_compose "${CLIENT}" down
     ;;
   restart)
     need_client
@@ -102,7 +104,7 @@ case "${CMD}" in
     if [[ "$#" -eq 0 ]]; then
       set -- bot worker
     fi
-    compose_base "${CLIENT}" restart "$@"
+    run_compose "${CLIENT}" restart "$@"
     ;;
   logs)
     need_client
@@ -111,7 +113,7 @@ case "${CMD}" in
     if [[ "${4:-}" == "--tail" ]]; then
       TAIL="${5:-200}"
     fi
-    compose_base "${CLIENT}" logs -f --tail="${TAIL}" "${SERVICE}"
+    run_compose "${CLIENT}" logs -f --tail="${TAIL}" "${SERVICE}"
     ;;
   env)
     need_client
@@ -126,7 +128,7 @@ case "${CMD}" in
       echo "ERROR: exec requires a command" >&2
       exit 2
     fi
-    compose_base "${CLIENT}" exec -T bot "$@"
+    run_compose "${CLIENT}" exec -T bot "$@"
     ;;
   *)
     echo "ERROR: unknown cmd: ${CMD}" >&2

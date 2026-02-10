@@ -22,6 +22,7 @@ chmod +x scripts/*.sh
 ./scripts/clientctl.sh logs test_client2 worker
 ./scripts/clientctl.sh restart test_client2
 ./scripts/clientctl.sh env test_client2
+./scripts/clientctl.sh exec test_client2 python -c "import os; print(os.getenv('INSTANCE_ID'))"
 ```
 
 ## centralctl.sh
