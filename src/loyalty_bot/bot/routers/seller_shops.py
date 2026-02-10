@@ -317,7 +317,7 @@ async def pay_check_and_fulfill_cb(
     provider_charge = (order.get("provider_payment_charge_id") or "").strip() or None
 
     seller = await ensure_seller(pool, tg_id)
-    seller_id = int(seller["seller_id"])
+    seller_id = int(seller["seller_id"]) if isinstance(seller, dict) else int(seller)
 
     already = await has_seller_credit_tx_by_invoice_payload(
         pool,
